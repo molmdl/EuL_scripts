@@ -1,0 +1,457 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "small_model": "github-copilot/gpt-5-mini",
+  "permission": {
+    "external_directory": {
+      "*": "ask",
+      "/share/home/nglokwan/.local/share/opencode/tool-output/*": "allow",
+      "/share/home/nglokwan/.local/share/opencode/plans/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/file-format-conversion/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/force-field-operations/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/free-energy-analysis/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/molecular-data-processing/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/statistical-analysis/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/coordinate-geometry/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/coarse-graining/*": "allow",
+      "/share/home/nglokwan/.opencode/skills/molecular-visualization/*": "allow"
+    },
+    "*": "ask",
+    "read": {
+      "*": "allow",
+      "*.env": "ask",
+      "*.env.*": "ask",
+      "*.env.example": "allow"
+    },
+    "bash": {
+      "*": "ask",
+      "git *": "allow",
+      "git push*": "ask",
+      "git pull*": "ask",
+      "git merge*": "ask",
+      "git rebase*": "ask",
+      "git reset*": "ask",
+      "git checkout*": "ask",
+      "npm *": "ask",
+      "rm *": "deny",
+      "pip *": "ask",
+      "pip3 *": "ask",
+      "apt *": "ask",
+      "mv *": "ask",
+      "conda *": "ask",
+      "wget *": "ask",
+      "curl *": "ask",
+      "python *": "ask"
+    },
+    "edit": {
+      "*": "deny"
+    }
+  },
+  "agent": {
+    "gsd-codebase-mapper": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask"
+        }
+      }
+    },
+    "gsd-debugger": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-executor": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-integration-checker": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-plan-checker": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-planner": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-project-researcher": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-research-synthesizer": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-roadmapper": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-phase-researcher": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-set-model": {
+      "model": "github-copilot/gpt-5-mini",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-set-profile": {
+      "model": "github-copilot/gpt-5-mini",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-settings": {
+      "model": "github-copilot/gpt-5-mini",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    },
+    "gsd-verifier": {
+      "model": "openrouter/minimax/minimax-m2.5",
+      "permission": {
+        "*": "ask",
+        "read": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git *": "allow",
+          "git push*": "ask",
+          "git pull*": "ask",
+          "git merge*": "ask",
+          "git rebase*": "ask",
+          "git reset*": "ask",
+          "git checkout*": "ask",
+          "npm *": "ask",
+          "rm *": "deny",
+          "pip *": "ask",
+          "pip3 *": "ask",
+          "apt *": "ask",
+          "mv *": "ask",
+          "conda *": "ask",
+          "wget *": "ask",
+          "curl *": "ask",
+          "python *": "ask" 
+        }
+      }
+    }
+  }
+}
