@@ -1,0 +1,8 @@
+set terminal svg
+set output 'cv-time.svg'
+p 'COLVAR' u 1:2 w l, 'COLVAR' u 1:3 w l, 'COLVAR' u 1:4 w l
+#p 'COLVAR' u 1:2 w l
+#set output 'd2-time.svg'
+#p 'COLVAR' u 1:3 w l
+set output 'funnel2D-time.svg'
+p 'COLVAR' u 4:5:1 w p pt 7 ps 0.25 palette
