@@ -1,0 +1,47 @@
+;       User spoel (236)
+;       Wed Nov  3 17:12:44 1993
+;       Input file
+;
+title               =  Yo
+cpp                 =  /lib/cpp
+define              = -DPOSRES
+;constraints         =  none
+integrator          =  md
+dt                  =  0.002
+nsteps              =  20000 ; total 10 us.
+nstcomm             =  1
+nstxout             =  500000
+nstvout             =  500000
+nstxtcout           =  5000
+
+constraints = h-bonds
+cutoff-scheme = Verlet
+vdwtype = cutoff
+vdw-modifier = force-switch
+rlist = 1.2
+rvdw = 1.2
+rvdw-switch = 1.0
+coulombtype = PME
+rcoulomb = 1.2
+DispCorr = no
+
+
+; Berendsen temperature coupling is on in two groups
+;Tcoupl              =  nose-hoover
+Tcoupl         =   Berendsen
+tc-grps             =  Protein non-Protein 
+;tau_t               =  1.0   
+tau_t               =  0.1      0.1
+ref_t               =  300      300
+; Energy monitoring
+; Pressure coupling is on
+Pcoupl              = Berendsen
+;Pcoupl              =  Parrinello-Rahman
+;tau_p               =  2.0
+tau_p               =  0.5
+compressibility     =  4.5e-5
+ref_p               =  1.0
+; Generate velocites is on at 300 K.
+gen_vel             =  yes
+gen_temp            =  300.0
+gen_seed            =  878594
