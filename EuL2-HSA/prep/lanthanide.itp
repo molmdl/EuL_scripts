@@ -1,0 +1,120 @@
+; CHARMM-port for GROMACS
+; created with charmm2gmx version 0.6.dev1+g077b6a1 on 2021-10-05 08:46:25.066274
+; Code: https://gitlab.com/awacha/charmm2gmx
+; Documentation: https://awacha.gitlab.com/charmm2gmx
+; Charmm2GMX written by András Wacha, based on the original port by 
+; E. Prabhu Raman, Justin A. Lemkul, Robert Best and Alexander D. MacKerell, Jr.
+; Molecule types for ions
+
+
+;LA3P  0  138.910000  0.0  A  0.338542  0.209200
+;PR3P  0  140.910000  0.0  A  0.320724  0.209200
+;ND3P  0  144.240000  0.0  A  0.311815  0.209200
+;SM3P  0  150.360000  0.0  A  0.298451  0.334720
+;EU3P  0  151.960000  0.0  A  0.293997  0.125520
+;TB3P  0  158.930000  0.0  A  0.285088  0.209200
+;DY3P  0  162.500000  0.0  A  0.276179  0.209200
+;ER3P  0  167.260000  0.0  A  0.267270  0.418400
+;TM3P  0  168.930000  0.0  A  0.258361  0.292880
+;LU3P  0  174.970000  0.0  A  0.249452  0.502080
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+LU3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     LU3         1      LU3        LU3      1       3.000     174.9700 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+TM3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     TM3         1      TM3        TM3      1       3.000     168.9300 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+ER3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     ER3         1      ER3        ER3      1       3.000     167.2600 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+DY3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     DY3         1      DY3        DY3      1       3.000     162.5000 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+TB3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     TB3         1      TB3        TB3      1       3.000     158.9300 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+EU3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     EU3         1      EU3        EU3      1       3.000     151.9600 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+SM3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     SM3         1      SM3        SM3      1       3.000     150.3600 ; 
+
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+LA3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     LA3         1      LA3        LA3      1       3.000     138.9100 ; 
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+PR3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     PR3         1      PR3        PR3      1       3.000     140.9100 ; 
+
+[ moleculetype ]
+;Lithium Ion
+; molname  nrexcl
+ND3        3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     ND3         1      ND3        ND3      1       3.000     144.2400 ; 
+
+
+
