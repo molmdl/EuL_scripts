@@ -1,0 +1,21 @@
+set terminal png enhanced font "Helvetica, 14" background "white" size 800,600
+set lmargin at screen 0.2
+set rmargin at screen 0.8
+set mxtics 5
+set mytics 5
+set grid xtics ytics lc "black" lw 0.8
+set cblabel offset 1
+unset key
+set pm3d map
+set palette cubehelix
+set output "s1_fes_d1ori.png"
+set cblabel "Free Energy (kJ/mol)"
+set zlabel "Free Energy (kJ/mol)"
+set ylabel "θ (Degree)"
+set xlabel "d (nm)"
+set xrange [0.05:7]
+set yrange [0:180]
+set zrange [0:50]
+set pm3d interpolate 4,4
+
+sp 's1_fes_d1ori.dat' u 1:2:3 w pm3d

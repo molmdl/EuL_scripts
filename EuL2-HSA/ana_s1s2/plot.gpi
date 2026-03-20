@@ -1,0 +1,54 @@
+set terminal png enhanced font "Helvetica, 12" background "white" size 800,600
+set lmargin at screen 0.2
+set rmargin at screen 0.8
+set mxtics 5
+set mytics 5
+set grid xtics ytics lc "black" lw 0.8
+set cblabel offset 1
+unset key
+set pm3d map
+set palette cubehelix
+#s1 fps
+set output "s1_fes_fps.png"
+set cblabel "Free Energy (kJ/mol)"
+set zlabel "Free Energy (kJ/mol)"
+set ylabel "Distance from the Funnel Axis fps.ld (nm)"
+set xlabel "Position on the Funnel Axis fps.lp (nm)"
+set xrange [0.01:6.5]
+set yrange [0:2.2]
+set zrange [0:50]
+set pm3d interpolate 4,4
+sp 's1_fes_fps.dat' u 1:2:3 w pm3d
+#s1 d1-fpsld
+set output "s1_fes_d1fpsld.png"
+set cblabel "Free Energy (kJ/mol)"
+set zlabel "Free Energy (kJ/mol)"
+set ylabel "Distance from the Funnel Axis fps.ld (nm)"
+set xlabel "COM Distance Between [EuL^2] Phenyl and L219/L238 (nm)"
+set xrange [0.05:7]
+set yrange [0:2.2]
+set zrange [0:50]
+set pm3d interpolate 4,4
+sp 's1_fes_d1fpsld.dat' u 1:2:3 w pm3d
+#s1 d1-dm
+set output "s1_fes_d1dm.png"
+set cblabel "Free Energy (kJ/mol)"
+set zlabel "Free Energy (kJ/mol)"
+set ylabel "Eu3 - E188 OE1/OE2 Min. Distance (nm)"
+set xlabel "COM Distance Between [EuL^2] Phenyl and L219/L238 (nm)"
+set xrange [0.05:7]
+set yrange [0.4:4.5]
+set zrange [0:50]
+set pm3d interpolate 4,4
+sp 's1_fes_d1dm.dat' u 1:2:3 w pm3d
+#s2 d1-dm
+set output "s2_fes_d1dm.png"
+set cblabel "Free Energy (kJ/mol)"
+set zlabel "Free Energy (kJ/mol)"
+set ylabel "Eu3 - E188 OE1/OE2 Min. Distance (nm)"
+set xlabel "COM Distance Between [EuL^2] Phenyl and L219/L238 (nm)"
+set xrange [0.48:0.92]
+set yrange [0.18:0.65]
+set zrange [0:90]
+set pm3d interpolate 4,4
+sp 's2_fes_d1dm.dat' u 1:2:3 w pm3d
