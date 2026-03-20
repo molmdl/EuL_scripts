@@ -1,0 +1,9 @@
+# Remember to create empty HILLS and COLVAR files in case you are doing the first run with RESTART option.
+# <fill> = necessary an input.
+# <?> = necessary a file.
+#RESTART
+WHOLEMOLECULES ENTITY0=1-99
+
+dih: TORSION ATOMS=49,20,3,99 #9235,9206,9189,9285
+
+PRINT ARG=* FILE=trj.COLVAR #STRIDE=500

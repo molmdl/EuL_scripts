@@ -1,0 +1,38 @@
+;
+;	User spoel (236)
+;	Wed Nov  3 17:12:44 1993
+;	Input file
+;
+cpp                 =  /lib/cpp
+define              =   -DPOSRES
+integrator          =  steep
+nsteps              =  50000
+lincs_iter          =  8
+;
+;	Energy minimizing stuff
+;
+; this is for gas phase
+;emtol               =  1
+
+; this is for systems with solvent
+emtol               =  100
+emstep              =  0.01
+
+
+constraints = h-bonds
+cutoff-scheme = Verlet
+vdwtype = cutoff
+vdw-modifier = force-switch
+rlist = 1.2
+rvdw = 1.2
+rvdw-switch = 1.0
+coulombtype = PME
+rcoulomb = 1.2
+DispCorr = no
+
+
+nstcomm             =  1
+
+Tcoupl              =  no
+Pcoupl              =  no
+gen_vel             =  no
