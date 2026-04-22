@@ -1,5 +1,5 @@
 source ~/data/scripts/gmx2023.5_plumed2.9.3_gpu_shared.env
-gmx editconf -f me_rrr.gro -o box.gro -d 2 -bt dodecahedron -c
+gmx editconf -f me_rrrL.gro -o box.gro -d 2 -bt dodecahedron -c
 gmx solvate -p lig_me.top -cp box.gro -cs spc216 -o solv.gro
 gmx grompp -f em.mdp -c solv.gro -p lig_me.top -o ion.tpr -maxwarn 2
 echo SOL | gmx genion -s ion.tpr -p lig_me.top -neutral -nname CL -pname  NA -conc 0.15 -o ion.gro

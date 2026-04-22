@@ -1,0 +1,1096 @@
+#!/usr/bin/env python3
+"""
+dock2com_1.py
+=============
+One-step workflow: Select best docking pose and create MD-ready system files.
+
+Combines functionality from:
+- mol2_reorder.py (SDF parsing, model selection, GRO conversion)
+- dock2com.py (coordinate combination, topology generation)
+
+Example Usage
+-------------
+    python dock2com_1.py -i lig.itp -s hsa*-dzp.sdf -r topol.top -t lig.mol2
+    python dock2com_1.py -i lig.itp -s hsa*-dzp.sdf --list-models
+"""
+
+import argparse
+import os
+import re
+import sys
+import textwrap
+from collections import defaultdict, Counter
+
+import numpy as np
+import networkx as nx
+from networkx.algorithms import isomorphism
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+LOWER_IS_BETTER = {"minimizedAffinity"}
+DEFAULT_METRIC = "minimizedAffinity"
+DEFAULT_REC_GRO_PATTERN = "{prefix}.pdb_ali.gro"
+
+# ---------------------------------------------------------------------------
+# SDF I/O
+# ---------------------------------------------------------------------------
+
+def parse_sdf(path):
+    with open(path) as fh:
+        content = fh.read()
+    
+    models = []
+    records = content.split("$$$$")
+    for rec_idx, rec in enumerate(records):
+        rec = rec.strip()
+        if not rec:
+            continue
+        lines = rec.split("\n")
+        if len(lines) < 4:
+            continue
+        
+        title = lines[0].strip()
+        counts_line = lines[3]
+        try:
+            ac = int(counts_line[0:3])
+            bc = int(counts_line[3:6])
+        except ValueError:
+            continue
+        
+        atoms = []
+        for i in range(4, 4 + ac):
+            if i >= len(lines):
+                break
+            ln = lines[i]
+            el = ln[31:34].strip()
+            if el == "*":
+                el = "EU"
+            atoms.append({
+                "idx": i - 3,
+                "el": el,
+                "x": float(ln[0:10]),
+                "y": float(ln[10:20]),
+                "z": float(ln[20:30]),
+            })
+        
+        bonds = []
+        for i in range(4 + ac, 4 + ac + bc):
+            if i >= len(lines):
+                break
+            ln = lines[i]
+            bonds.append({
+                "a1": int(ln[0:3]),
+                "a2": int(ln[3:6]),
+                "type": int(ln[6:9]),
+            })
+        
+        scores = {}
+        for j, ln in enumerate(lines):
+            if ln.startswith("> <"):
+                key = ln.strip()[3:].rstrip(">").strip()
+                if j + 1 < len(lines):
+                    try:
+                        scores[key] = float(lines[j + 1].strip())
+                    except ValueError:
+                        pass
+        
+        models.append({
+            "model_num": rec_idx + 1,
+            "title": title,
+            "atoms": atoms,
+            "bonds": bonds,
+            "scores": scores,
+            "raw_lines": lines,
+        })
+    
+    return models
+
+
+def collect_sdf_files(sdf_patterns):
+    missing = []
+    valid_paths = []
+    
+    for path in sdf_patterns:
+        if os.path.isfile(path):
+            valid_paths.append(path)
+        else:
+            missing.append(path)
+    
+    if missing:
+        raise FileNotFoundError(f"SDF file(s) not found: {', '.join(missing)}")
+    
+    return sorted(valid_paths)
+
+
+def select_best_across_sdfiles(sdf_paths, metric=DEFAULT_METRIC):
+    best_model = None
+    best_score = None
+    best_file = None
+    reverse = metric not in LOWER_IS_BETTER
+    
+    for sdf_path in sdf_paths:
+        print(f"Parsing SDF:        {sdf_path}")
+        models = parse_sdf(sdf_path)
+        print(f"  {len(models)} models found")
+        
+        for model in models:
+            if metric not in model["scores"]:
+                continue
+            score = model["scores"][metric]
+            
+            if best_score is None:
+                best_score = score
+                best_model = model
+                best_file = sdf_path
+            elif reverse:
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+                    best_file = sdf_path
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_model = model
+                    best_file = sdf_path
+    
+    if best_model is None:
+        raise ValueError(f"Metric '{metric}' not found in any model across all files.")
+    
+    return best_model, best_file, best_model["model_num"]
+
+
+def list_models_across_sdfiles(sdf_paths, metrics=None):
+    if metrics is None:
+        all_keys = []
+        seen = set()
+        for sdf_path in sdf_paths:
+            models = parse_sdf(sdf_path)
+            for m in models:
+                for k in m["scores"]:
+                    if k not in seen:
+                        all_keys.append(k)
+                        seen.add(k)
+        metrics = all_keys
+    
+    max_fn_len = max(len(os.path.basename(p)) for p in sdf_paths)
+    fn_width = max(max_fn_len, 8)
+    
+    header = f"{('File'):>{fn_width}}  {'Model':>6}" + "".join(f"  {k:>16}" for k in metrics)
+    print(header)
+    print("-" * len(header))
+    
+    for sdf_path in sdf_paths:
+        fn = os.path.basename(sdf_path)
+        models = parse_sdf(sdf_path)
+        for m in models:
+            row = f"{fn:>{fn_width}}  {m['model_num']:>6}"
+            for k in metrics:
+                val = m["scores"].get(k, float("nan"))
+                row += f"  {val:>16.4f}"
+            print(row)
+
+
+# ---------------------------------------------------------------------------
+# Mol2 I/O
+# ---------------------------------------------------------------------------
+
+def parse_mol2(path):
+    atoms = []
+    bonds = []
+    header_lines = []
+    section = None
+    mol_line_count = 0
+    
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if line.startswith("@<TRIPOS>"):
+                section = line.strip()
+                mol_line_count = 0
+                continue
+            
+            if section == "@<TRIPOS>MOLECULE":
+                mol_line_count += 1
+                if mol_line_count <= 5:
+                    header_lines.append(line)
+            
+            elif section == "@<TRIPOS>ATOM":
+                parts = line.split()
+                if not parts:
+                    continue
+                atype = parts[5]
+                el = _element(atype)
+                atoms.append({
+                    "idx": int(parts[0]),
+                    "name": parts[1],
+                    "x": float(parts[2]),
+                    "y": float(parts[3]),
+                    "z": float(parts[4]),
+                    "type": atype,
+                    "element": el,
+                    "res_num": parts[6] if len(parts) > 6 else "1",
+                    "res_name": parts[7] if len(parts) > 7 else "UNL1",
+                    "charge": parts[8] if len(parts) > 8 else "0.0000",
+                })
+            
+            elif section == "@<TRIPOS>BOND":
+                parts = line.split()
+                if len(parts) >= 4:
+                    bonds.append({
+                        "idx": int(parts[0]),
+                        "a1": int(parts[1]),
+                        "a2": int(parts[2]),
+                        "type": parts[3],
+                    })
+    
+    return atoms, bonds, header_lines
+
+
+def _element(atom_type):
+    el = atom_type.split(".")[0].upper()
+    if el.startswith("EU"):
+        el = "EU"
+    return el
+
+
+# ---------------------------------------------------------------------------
+# ITP I/O
+# ---------------------------------------------------------------------------
+
+def parse_itp(path):
+    atoms = []
+    in_atoms = False
+    
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("["):
+                if "atoms" in line.lower():
+                    in_atoms = True
+                    continue
+                else:
+                    in_atoms = False
+            
+            if in_atoms and line and not line.startswith(";"):
+                parts = line.split()
+                if len(parts) >= 8:
+                    try:
+                        atoms.append({
+                            "idx": int(parts[0]),
+                            "type": parts[1],
+                            "res_num": int(parts[2]),
+                            "res_name": parts[3],
+                            "atom_name": parts[4],
+                            "cgnr": int(parts[5]),
+                            "charge": float(parts[6]),
+                            "mass": float(parts[7]),
+                        })
+                    except ValueError:
+                        continue
+    
+    return atoms
+
+
+def _itp_element(atom_type):
+    type_map = {
+        "cl": "Cl", "Cl": "Cl",
+        "ca": "C", "ce": "C", "c": "C", "c3": "C",
+        "o": "O", "n": "N", "n2": "N",
+        "ha": "H", "h1": "H", "h": "H",
+    }
+    return type_map.get(atom_type.lower(), atom_type[0].upper())
+
+
+# ---------------------------------------------------------------------------
+# GRO I/O
+# ---------------------------------------------------------------------------
+
+def write_gro(path, atoms, title="Generated", box=None):
+    _no_overwrite(path)
+    with open(path, "w") as fh:
+        fh.write(f"{title}\n")
+        fh.write(f"{len(atoms)}\n")
+        for a in atoms:
+            x_nm = a["x"] * 0.1
+            y_nm = a["y"] * 0.1
+            z_nm = a["z"] * 0.1
+            fh.write(
+                f"{a['res_num']:>5d}{a['res_name']:<5s}"
+                f"{a['atom_name']:>5s}{a['idx']:>5d}"
+                f"{x_nm:>8.3f}{y_nm:>8.3f}{z_nm:>8.3f}\n"
+            )
+        if box is not None:
+            fh.write(f"{box[0]:>10.5f}{box[1]:>10.5f}{box[2]:>10.5f}\n")
+        else:
+            fh.write("   0.00000   0.00000   0.00000\n")
+
+
+# ---------------------------------------------------------------------------
+# Graph utilities
+# ---------------------------------------------------------------------------
+
+def _build_graph(atoms, bonds, heavy_only=False):
+    G = nx.Graph()
+    incl = {a["idx"] for a in atoms if not heavy_only or a["element"] != "H"}
+    for a in atoms:
+        if a["idx"] in incl:
+            G.add_node(a["idx"], element=a["element"])
+    for b in bonds:
+        if b["a1"] in incl and b["a2"] in incl:
+            G.add_edge(b["a1"], b["a2"])
+    return G
+
+
+def _node_match(n1, n2):
+    return n1["element"].upper() == n2["element"].upper()
+
+
+def find_isomorphism(G_ref, G_src):
+    gm = isomorphism.GraphMatcher(G_ref, G_src, node_match=_node_match)
+    if not gm.is_isomorphic():
+        raise ValueError(
+            "No graph isomorphism found between the two molecules.\n"
+            "Check that both files represent the same molecular graph."
+        )
+    return next(gm.isomorphisms_iter())
+
+
+# ---------------------------------------------------------------------------
+# Hydrogen placement
+# ---------------------------------------------------------------------------
+
+def _vec(a, b):
+    v = b - a
+    norm = np.linalg.norm(v)
+    if norm < 1e-10:
+        raise ValueError("Zero-length vector encountered.")
+    return v / norm
+
+
+def _get_coord(atom):
+    return np.array([atom["x"], atom["y"], atom["z"]], dtype=float)
+
+
+def place_h_from_template(ref_heavy_atom, ref_h_atom, ref_heavy_nbrs,
+                           new_heavy_coord, new_nbr_coords):
+    P_heavy = _get_coord(ref_heavy_atom)
+    P_h = _get_coord(ref_h_atom)
+    dh = P_h - P_heavy
+    
+    if not ref_heavy_nbrs:
+        new_pos = new_heavy_coord + dh
+        return new_pos
+    
+    nbr_vecs_ref = [_vec(P_heavy, _get_coord(n)) for n in ref_heavy_nbrs]
+    nbr_vecs_new = [_vec(new_heavy_coord, c) for c in new_nbr_coords]
+    
+    e1_ref = np.mean(nbr_vecs_ref, axis=0)
+    norm_e1 = np.linalg.norm(e1_ref)
+    if norm_e1 < 1e-8:
+        e1_ref = nbr_vecs_ref[0]
+    else:
+        e1_ref /= norm_e1
+    
+    v2_ref = nbr_vecs_ref[0] - np.dot(nbr_vecs_ref[0], e1_ref) * e1_ref
+    if np.linalg.norm(v2_ref) < 1e-8:
+        if len(nbr_vecs_ref) > 1:
+            v2_ref = nbr_vecs_ref[1] - np.dot(nbr_vecs_ref[1], e1_ref) * e1_ref
+        if np.linalg.norm(v2_ref) < 1e-8:
+            arb = np.array([1.0, 0.0, 0.0])
+            if abs(np.dot(e1_ref, arb)) > 0.9:
+                arb = np.array([0.0, 1.0, 0.0])
+            v2_ref = arb - np.dot(arb, e1_ref) * e1_ref
+    e2_ref = v2_ref / np.linalg.norm(v2_ref)
+    e3_ref = np.cross(e1_ref, e2_ref)
+    
+    h_e1 = np.dot(dh, e1_ref)
+    h_e2 = np.dot(dh, e2_ref)
+    h_e3 = np.dot(dh, e3_ref)
+    
+    e1_new = np.mean(nbr_vecs_new, axis=0)
+    norm_e1n = np.linalg.norm(e1_new)
+    if norm_e1n < 1e-8:
+        e1_new = nbr_vecs_new[0]
+    else:
+        e1_new /= norm_e1n
+    
+    v2_new = nbr_vecs_new[0] - np.dot(nbr_vecs_new[0], e1_new) * e1_new
+    if np.linalg.norm(v2_new) < 1e-8:
+        if len(nbr_vecs_new) > 1:
+            v2_new = nbr_vecs_new[1] - np.dot(nbr_vecs_new[1], e1_new) * e1_new
+        if np.linalg.norm(v2_new) < 1e-8:
+            arb = np.array([1.0, 0.0, 0.0])
+            if abs(np.dot(e1_new, arb)) > 0.9:
+                arb = np.array([0.0, 1.0, 0.0])
+            v2_new = arb - np.dot(arb, e1_new) * e1_new
+    e2_new = v2_new / np.linalg.norm(v2_new)
+    e3_new = np.cross(e1_new, e2_new)
+    
+    new_pos = new_heavy_coord + h_e1 * e1_new + h_e2 * e2_new + h_e3 * e3_new
+    return new_pos
+
+
+# ---------------------------------------------------------------------------
+# Core: SDF pose -> GRO
+# ---------------------------------------------------------------------------
+
+def sdf_pose_to_gro(itp_path, sdf_path, out_path,
+                    mol2_template_path=None,
+                    metric=DEFAULT_METRIC, model_num=None):
+    _no_overwrite(out_path)
+    
+    print(f"Parsing ITP:         {itp_path}")
+    itp_atoms = parse_itp(itp_path)
+    print(f"  {len(itp_atoms)} atoms")
+    
+    mol2_atoms = None
+    mol2_bonds = None
+    if mol2_template_path:
+        print(f"Parsing mol2 template: {mol2_template_path}")
+        mol2_atoms, mol2_bonds, _ = parse_mol2(mol2_template_path)
+        print(f"  {len(mol2_atoms)} atoms, {len(mol2_bonds)} bonds")
+    
+    print(f"Parsing SDF:        {sdf_path}")
+    models = parse_sdf(sdf_path)
+    print(f"  {len(models)} models found")
+    
+    model = models[model_num - 1] if model_num else _select_model(models, metric)
+    sc = model["scores"]
+    print(
+        f"  Selected model {model['model_num']}  "
+        f"minimizedAffinity={sc.get('minimizedAffinity', float('nan')):.4f}  "
+        f"CNNscore={sc.get('CNNscore', float('nan')):.4f}  "
+        f"CNNaffinity={sc.get('CNNaffinity', float('nan')):.4f}"
+    )
+    
+    sdf_atoms = model["atoms"]
+    sdf_bonds = model["bonds"]
+    
+    sdf_by_idx = {a["idx"]: a for a in sdf_atoms}
+    sdf_adj = defaultdict(list)
+    for b in sdf_bonds:
+        sdf_adj[b["a1"]].append(b["a2"])
+        sdf_adj[b["a2"]].append(b["a1"])
+    
+    new_coords = {}
+    
+    if mol2_atoms:
+        ref_atoms = mol2_atoms
+        ref_bonds = mol2_bonds
+        
+        ref_heavy = [a for a in ref_atoms if a["element"] != "H"]
+        ref_heavy_idx = {a["idx"] for a in ref_heavy}
+        ref_heavy_bonds = [b for b in ref_bonds
+                           if b["a1"] in ref_heavy_idx and b["a2"] in ref_heavy_idx]
+        
+        sdf_heavy = [{"idx": a["idx"], "element": a["el"]}
+                    for a in sdf_atoms if a["el"] != "H"]
+        sdf_heavy_bonds = [{"a1": b["a1"], "a2": b["a2"]}
+                          for b in sdf_bonds
+                          if sdf_by_idx[b["a1"]]["el"] != "H"
+                          and sdf_by_idx[b["a2"]]["el"] != "H"]
+        
+        G_ref_h = _build_graph(ref_heavy, ref_heavy_bonds)
+        G_sdf_h = _build_graph(sdf_heavy, sdf_heavy_bonds)
+        mapping = find_isomorphism(G_ref_h, G_sdf_h)
+        
+        itp_to_sdf = {}
+        for itp_a in itp_atoms:
+            itp_idx = itp_a["idx"]
+            if itp_idx in mapping:
+                itp_to_sdf[itp_idx] = mapping[itp_idx]
+        
+        ref_by_idx = {a["idx"]: a for a in ref_atoms}
+        ref_adj = defaultdict(list)
+        for b in ref_bonds:
+            ref_adj[b["a1"]].append(b["a2"])
+            ref_adj[b["a2"]].append(b["a1"])
+        
+        sdf_n_h_map = defaultdict(list)
+        for a in sdf_atoms:
+            if a["el"] == "N":
+                for nb_idx in sdf_adj[a["idx"]]:
+                    if sdf_by_idx[nb_idx]["el"] == "H":
+                        sdf_n_h_map[a["idx"]].append(nb_idx)
+        
+        used_sdf_h = set()
+        
+        for itp_idx, sdf_idx in itp_to_sdf.items():
+            sdf_a = sdf_by_idx[sdf_idx]
+            new_coords[itp_idx] = (sdf_a["x"], sdf_a["y"], sdf_a["z"])
+        
+        for itp_a in itp_atoms:
+            itp_idx = itp_a["idx"]
+            if _itp_element(itp_a["type"]) == "H":
+                if itp_idx in ref_by_idx and ref_by_idx[itp_idx]["element"] == "H":
+                    ref_h = ref_by_idx[itp_idx]
+                    heavy_nbrs_ref = [ref_by_idx[n] for n in ref_adj[ref_h["idx"]]
+                                      if ref_by_idx[n]["element"] != "H"]
+                    if not heavy_nbrs_ref:
+                        new_coords[itp_idx] = (ref_h["x"], ref_h["y"], ref_h["z"])
+                        continue
+                    
+                    parent_ref = heavy_nbrs_ref[0]
+                    
+                    if parent_ref["element"] == "N":
+                        sdf_parent_idx = mapping.get(parent_ref["idx"])
+                        if sdf_parent_idx:
+                            avail_sdf_h = [h for h in sdf_n_h_map[sdf_parent_idx]
+                                           if h not in used_sdf_h]
+                            if avail_sdf_h:
+                                sdf_h = sdf_by_idx[avail_sdf_h[0]]
+                                used_sdf_h.add(avail_sdf_h[0])
+                                new_coords[itp_idx] = (sdf_h["x"], sdf_h["y"], sdf_h["z"])
+                                continue
+                    
+                    sdf_parent_idx = mapping.get(parent_ref["idx"])
+                    if sdf_parent_idx is None:
+                        new_coords[itp_idx] = (ref_h["x"], ref_h["y"], ref_h["z"])
+                        continue
+                    
+                    new_parent_coord = np.array(new_coords[parent_ref["idx"]])
+                    
+                    other_heavy_ref = [ref_by_idx[n] for n in ref_adj[parent_ref["idx"]]
+                                       if n != ref_h["idx"] and ref_by_idx[n]["element"] != "H"]
+                    
+                    other_heavy_new_coords = []
+                    for oh in other_heavy_ref:
+                        if oh["idx"] in new_coords:
+                            other_heavy_new_coords.append(np.array(new_coords[oh["idx"]]))
+                        else:
+                            other_heavy_new_coords.append(_get_coord(oh))
+                    
+                    new_h_xyz = place_h_from_template(
+                        parent_ref, ref_h, other_heavy_ref,
+                        new_parent_coord, other_heavy_new_coords,
+                    )
+                    new_coords[itp_idx] = tuple(new_h_xyz)
+                else:
+                    new_coords[itp_idx] = (0.0, 0.0, 0.0)
+    else:
+        itp_heavy = [a for a in itp_atoms if _itp_element(a["type"]) != "H"]
+        
+        sdf_heavy = [{"idx": a["idx"], "element": a["el"]}
+                    for a in sdf_atoms if a["el"] != "H"]
+        sdf_heavy_bonds = [{"a1": b["a1"], "a2": b["a2"]}
+                          for b in sdf_bonds
+                          if sdf_by_idx[b["a1"]]["el"] != "H"
+                          and sdf_by_idx[b["a2"]]["el"] != "H"]
+        
+        itp_elems = Counter(_itp_element(a["type"]) for a in itp_heavy)
+        sdf_elems = Counter(a["element"] for a in sdf_heavy)
+        
+        if itp_elems != sdf_elems:
+            raise ValueError(
+                f"Element counts mismatch: ITP={dict(itp_elems)}, SDF={dict(sdf_elems)}"
+            )
+        
+        itp_heavy_by_elem = defaultdict(list)
+        for a in itp_heavy:
+            itp_heavy_by_elem[_itp_element(a["type"]).upper()].append(a)
+        
+        sdf_heavy_by_elem = defaultdict(list)
+        for a in sdf_heavy:
+            sdf_heavy_by_elem[a["element"].upper()].append(a)
+        
+        sdf_degrees = {}
+        for a in sdf_heavy:
+            deg = sum(1 for b in sdf_heavy_bonds if b["a1"] == a["idx"] or b["a2"] == a["idx"])
+            sdf_degrees[a["idx"]] = deg
+        
+        mapping = {}
+        for elem, itp_list in itp_heavy_by_elem.items():
+            sdf_list = sdf_heavy_by_elem[elem]
+            itp_sorted = sorted(itp_list, key=lambda x: x["idx"])
+            sdf_sorted = sorted(sdf_list, key=lambda a: sdf_degrees.get(a["idx"], 0))
+            for itp_a, sdf_a in zip(itp_sorted, sdf_sorted):
+                mapping[itp_a["idx"]] = sdf_a["idx"]
+        
+        for itp_idx, sdf_idx in mapping.items():
+            sdf_a = sdf_by_idx[sdf_idx]
+            new_coords[itp_idx] = (sdf_a["x"], sdf_a["y"], sdf_a["z"])
+    
+    out_atoms = []
+    for i, itp_a in enumerate(itp_atoms, 1):
+        if itp_a["idx"] in new_coords:
+            x, y, z = new_coords[itp_a["idx"]]
+        else:
+            x, y, z = 0.0, 0.0, 0.0
+        
+        out_atoms.append({
+            "idx": i,
+            "atom_name": itp_a["atom_name"],
+            "res_num": itp_a["res_num"],
+            "res_name": itp_a["res_name"],
+            "x": x,
+            "y": y,
+            "z": z,
+        })
+    
+    write_gro(out_path, out_atoms)
+    print(f"Written: {out_path}")
+
+
+def _select_model(models, metric=DEFAULT_METRIC):
+    candidates = [m for m in models if metric in m["scores"]]
+    if not candidates:
+        raise ValueError(f"Metric '{metric}' not found in any model.")
+    reverse = metric not in LOWER_IS_BETTER
+    return sorted(candidates, key=lambda m: m["scores"][metric], reverse=reverse)[0]
+
+
+# ---------------------------------------------------------------------------
+# Topology functions (from dock2com.py)
+# ---------------------------------------------------------------------------
+
+def extract_water_models(ff_dir):
+    watermodels_file = os.path.join(ff_dir, 'watermodels.dat')
+    water_models = set()
+    
+    if os.path.exists(watermodels_file):
+        with open(watermodels_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and len(line.split()) >= 1:
+                    name = line.split()[0]
+                    water_models.add(name)
+    
+    return water_models
+
+
+def extract_ff_paths_from_top(top_file):
+    ff_path = None
+    water_itp = None
+    ions_itp = None
+    ff_dir = None
+    
+    with open(top_file, 'r') as f:
+        for line in f:
+            if line.strip().startswith('#include') and '.ff/' in line:
+                path = line.strip().split('"')[1] if '"' in line else line.strip()
+                if 'forcefield.itp' in path:
+                    ff_path = path
+                    ff_dir = os.path.dirname(path)
+                elif 'ions.itp' in path:
+                    ions_itp = path
+    
+    water_models = extract_water_models(ff_dir) if ff_dir else set()
+    
+    with open(top_file, 'r') as f:
+        for line in f:
+            if line.strip().startswith('#include') and '.ff/' in line:
+                path = line.strip().split('"')[1] if '"' in line else line.strip()
+                if path.endswith('.itp') and 'forcefield' not in path and 'ions' not in path:
+                    for wm in water_models:
+                        if f'{wm}.itp' in path:
+                            water_itp = path
+                            break
+                    if water_itp:
+                        break
+    
+    return ff_path, water_itp, ions_itp
+
+
+def get_moleculetype_name(top_file):
+    with open(top_file, 'r') as f:
+        lines = f.readlines()
+    
+    in_moleculetype = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[ moleculetype ]') or stripped == '[moleculetype]':
+            in_moleculetype = True
+            continue
+        if in_moleculetype:
+            if stripped.startswith('['):
+                break
+            if stripped and not stripped.startswith(';') and not stripped.startswith('#'):
+                return stripped.split()[0]
+    
+    return None
+
+
+def get_prefix(filename):
+    basename = os.path.basename(filename)
+    if '.' in basename:
+        return basename.rsplit('.', 1)[0]
+    return basename
+
+
+def combine_coordinates(rec_gro, lig_gro, output_gro):
+    with open(rec_gro, 'r') as f:
+        rec_lines = f.readlines()
+    
+    with open(lig_gro, 'r') as f:
+        lig_lines = f.readlines()
+    
+    rec_atom_count = int(rec_lines[1].strip())
+    lig_atom_count = int(lig_lines[1].strip())
+    total_atoms = rec_atom_count + lig_atom_count
+    
+    box = rec_lines[-1].strip()
+    
+    combined = []
+    combined.append(rec_lines[0].strip() + '\n')
+    combined.append(f' {total_atoms}\n')
+    
+    for line in rec_lines[2:-1]:
+        combined.append(line)
+    
+    for line in lig_lines[2:-1]:
+        combined.append(line)
+    
+    combined.append(box + '\n')
+    
+    with open(output_gro, 'w') as f:
+        f.writelines(combined)
+    
+    print(f"Created {output_gro} with {total_atoms} atoms")
+
+
+def extract_receptor_topology(rec_top, rec_itp):
+    with open(rec_top, 'r') as f:
+        lines = f.readlines()
+    
+    start_line = None
+    for i, line in enumerate(lines):
+        if '[ moleculetype ]' in line:
+            start_line = i
+            break
+    
+    if start_line is None:
+        raise ValueError(f"Could not find [ moleculetype ] in {rec_top}")
+    
+    end_idx = None
+    for i, line in enumerate(lines):
+        if i <= start_line:
+            continue
+        if line.strip().startswith('#include') and '.ff/' in line:
+            end_idx = i
+            break
+    
+    if end_idx is None:
+        end_idx = len(lines)
+    
+    receptor_itp = ''.join(lines[start_line:end_idx])
+    
+    with open(rec_itp, 'w') as f:
+        f.write(receptor_itp)
+    
+    print(f"Created {rec_itp}")
+
+
+def clean_itp_for_system(itp_file):
+    with open(itp_file, 'r') as f:
+        content = f.read()
+    
+    if '[ atomtypes ]' in content or '[ atomtypes ]\n' in content:
+        atomtypes_start = content.find('[ atomtypes ]')
+        moleculetype_start = content.find('[ moleculetype ]', atomtypes_start)
+        
+        if moleculetype_start != -1:
+            content = content[:atomtypes_start] + content[moleculetype_start:]
+            
+            with open(itp_file, 'w') as f:
+                f.write(content)
+            print(f"Removed [ atomtypes ] section from {itp_file}")
+
+
+def create_system_topology(args):
+    for itp in [args.rec_itp, args.lig_itp]:
+        if itp and os.path.exists(itp):
+            clean_itp_for_system(itp)
+    
+    sys_top = f"""; Include forcefield parameters
+#include "{args.ff_path}"
+
+; Include receptor topology
+#include "{args.rec_itp}"
+
+; Include ligand topology
+#include "{args.lig_itp}"
+"""
+    
+    if args.water_itp:
+        sys_top += f"""
+
+; Include water topology
+#include "{args.water_itp}"
+
+#ifdef POSRES_WATER
+; Position restraint for each water oxygen
+[ position_restraints ]
+;  i funct       fcx        fcy        fcz
+   1    1       1000       1000       1000
+#endif
+"""
+    
+    if args.ions_itp:
+        sys_top += f"""
+
+; Include topology for ions
+#include "{args.ions_itp}"
+"""
+    
+    sys_top += f"""
+
+[ system ]
+; Name
+{args.sys_name}
+
+[ molecules ]
+; Compound        #mols
+{args.rec_name}             1
+{args.lig_name}     1
+"""
+    
+    with open(args.sys_top, 'w') as f:
+        f.write(sys_top)
+    
+    print(f"Created {args.sys_top}")
+
+
+# ---------------------------------------------------------------------------
+# Receptor auto-detection
+# ---------------------------------------------------------------------------
+
+def derive_receptor_gro_from_sdf(sdf_path, pattern=DEFAULT_REC_GRO_PATTERN, search_dir=None):
+    basename = os.path.basename(sdf_path)
+    name_without_ext = os.path.splitext(basename)[0]
+    
+    if '-' in name_without_ext:
+        prefix = name_without_ext.split('-')[0]
+    else:
+        prefix = name_without_ext
+    
+    rec_gro_name = pattern.format(prefix=prefix)
+    
+    if search_dir is None:
+        search_dir = os.path.dirname(sdf_path)
+        if not search_dir:
+            search_dir = '.'
+    
+    rec_gro_path = os.path.join(search_dir, rec_gro_name)
+    
+    return rec_gro_path, prefix
+
+
+# ---------------------------------------------------------------------------
+# Safety helper
+# ---------------------------------------------------------------------------
+
+def _no_overwrite(path):
+    if os.path.exists(path):
+        print(f"ERROR: '{path}' already exists. Refusing to overwrite.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="dock2com_1.py",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.dedent(__doc__),
+    )
+    
+    lig_group = parser.add_argument_group("Ligand Inputs")
+    lig_group.add_argument("-i", "--lig-itp", required=True, metavar="ITP",
+                           help="Ligand ITP file (defines atom ordering)")
+    lig_group.add_argument("-s", "--sdf", required=True, nargs="+", metavar="SDF",
+                           help="One or more SDF docking files. Supports glob patterns.")
+    lig_group.add_argument("-t", "--template", default=None, metavar="MOL2",
+                           help="Optional mol2 template for hydrogen reconstruction")
+    
+    rec_group = parser.add_argument_group("Receptor Inputs")
+    rec_group.add_argument("-r", "--rec-top", default=None, metavar="TOP",
+                           help="Receptor topology file (.top). Required unless --list-models.")
+    rec_group.add_argument("--rec-gro-pattern", default=DEFAULT_REC_GRO_PATTERN, metavar="PATTERN",
+                           help=f"Pattern for receptor GRO filename. Default: {DEFAULT_REC_GRO_PATTERN}")
+    rec_group.add_argument("--rec-dir", default=None, metavar="DIR",
+                           help="Directory containing receptor files. Default: same as SDF files.")
+    
+    out_group = parser.add_argument_group("Outputs")
+    out_group.add_argument("--lig-gro", default="best.gro", metavar="GRO",
+                           help="Output ligand GRO file. Default: best.gro")
+    out_group.add_argument("--com-gro", default="com.gro", metavar="GRO",
+                           help="Output combined GRO file. Default: com.gro")
+    out_group.add_argument("--rec-itp", default="rec.itp", metavar="ITP",
+                           help="Output receptor ITP file. Default: rec.itp")
+    out_group.add_argument("--sys-top", default="sys.top", metavar="TOP",
+                           help="Output system topology file. Default: sys.top")
+    
+    sel_group = parser.add_argument_group("Model Selection")
+    sel_group.add_argument("--metric", default=DEFAULT_METRIC, metavar="NAME",
+                           help=f"Score field for model selection. Default: {DEFAULT_METRIC}")
+    sel_group.add_argument("--model", type=int, default=None, metavar="N",
+                           help="Select specific model number (1-based).")
+    sel_group.add_argument("--list-models", action="store_true",
+                           help="List all models with scores and exit.")
+    
+    top_group = parser.add_argument_group("Topology Options")
+    top_group.add_argument("--ff-path", default=None, metavar="PATH",
+                           help="Forcefield.itp path. Default: auto-detect from receptor topology.")
+    top_group.add_argument("--water-itp", default=None, metavar="PATH",
+                           help="Water ITP path. Default: auto-detect from receptor topology.")
+    top_group.add_argument("--ions-itp", default=None, metavar="PATH",
+                           help="Ions ITP path. Default: auto-detect from receptor topology.")
+    top_group.add_argument("--sys-name", default=None, metavar="NAME",
+                           help="System name. Default: auto-generate from receptor and ligand names.")
+    top_group.add_argument("--rec-name", default=None, metavar="NAME",
+                           help="Receptor molecule name. Default: auto-detect from receptor topology.")
+    top_group.add_argument("--lig-name", default=None, metavar="NAME",
+                           help="Ligand molecule name. Default: auto-detect from ligand ITP.")
+    
+    return parser
+
+
+class Config:
+    def __init__(self, args):
+        self.lig_itp = args.lig_itp
+        self.sdf_paths = collect_sdf_files(args.sdf)
+        self.mol2_template = args.template
+        
+        self.rec_top = args.rec_top
+        self.rec_gro_pattern = args.rec_gro_pattern
+        self.rec_dir = args.rec_dir
+        
+        self.lig_gro = args.lig_gro
+        self.com_gro = args.com_gro
+        self.rec_itp = args.rec_itp
+        self.sys_top = args.sys_top
+        
+        self.metric = args.metric
+        self.model_num = args.model
+        self.list_models = args.list_models
+        
+        self.ff_path = args.ff_path
+        self.water_itp = args.water_itp
+        self.ions_itp = args.ions_itp
+        self.sys_name = args.sys_name
+        self.rec_name = args.rec_name
+        self.lig_name = args.lig_name
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    config = Config(args)
+    
+    if config.list_models:
+        list_models_across_sdfiles(config.sdf_paths)
+        return 0
+    
+    if config.rec_top is None:
+        parser.error("-r/--rec-top is required unless --list-models is specified.")
+    
+    print("=" * 60)
+    print("STEP 1: Selecting best docking model...")
+    print("=" * 60)
+    
+    best_model, best_file, best_model_num = select_best_across_sdfiles(
+        config.sdf_paths, metric=config.metric
+    )
+    
+    sc = best_model["scores"]
+    print(f"\nBest model selected:")
+    print(f"  File:   {os.path.basename(best_file)}")
+    print(f"  Model:  {best_model_num}")
+    print(f"  Scores: minimizedAffinity={sc.get('minimizedAffinity', float('nan')):.4f}  "
+          f"CNNscore={sc.get('CNNscore', float('nan')):.4f}  "
+          f"CNNaffinity={sc.get('CNNaffinity', float('nan')):.4f}")
+    
+    print("\n" + "=" * 60)
+    print("STEP 2: Auto-detecting receptor GRO file...")
+    print("=" * 60)
+    
+    rec_gro, prefix = derive_receptor_gro_from_sdf(
+        best_file,
+        pattern=config.rec_gro_pattern,
+        search_dir=config.rec_dir
+    )
+    
+    if not os.path.exists(rec_gro):
+        print(f"ERROR: Receptor GRO file not found: {rec_gro}", file=sys.stderr)
+        print(f"  Derived from SDF: {best_file}", file=sys.stderr)
+        print(f"  Pattern used: {config.rec_gro_pattern}", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"  Receptor GRO: {rec_gro}")
+    print(f"  Prefix: {prefix}")
+    
+    print("\n" + "=" * 60)
+    print("STEP 3: Converting SDF to ligand GRO...")
+    print("=" * 60)
+    
+    sdf_pose_to_gro(
+        itp_path=config.lig_itp,
+        sdf_path=best_file,
+        out_path=config.lig_gro,
+        mol2_template_path=config.mol2_template,
+        metric=config.metric,
+        model_num=best_model_num
+    )
+    
+    print("\n" + "=" * 60)
+    print("STEP 4: Combining receptor and ligand coordinates...")
+    print("=" * 60)
+    
+    combine_coordinates(rec_gro, config.lig_gro, config.com_gro)
+    
+    print("\n" + "=" * 60)
+    print("STEP 5: Extracting receptor topology...")
+    print("=" * 60)
+    
+    extract_receptor_topology(config.rec_top, config.rec_itp)
+    
+    print("\n" + "=" * 60)
+    print("STEP 6: Creating system topology...")
+    print("=" * 60)
+    
+    ff_path, water_itp, ions_itp = extract_ff_paths_from_top(config.rec_top)
+    
+    if config.ff_path is None:
+        config.ff_path = ff_path
+        print(f"  Auto-detected forcefield: {config.ff_path}")
+    
+    if config.water_itp is None:
+        config.water_itp = water_itp if water_itp else ''
+        if config.water_itp:
+            print(f"  Auto-detected water model: {config.water_itp}")
+    
+    if config.ions_itp is None:
+        config.ions_itp = ions_itp if ions_itp else ''
+        if config.ions_itp:
+            print(f"  Auto-detected ions ITP: {config.ions_itp}")
+    
+    if config.rec_name is None:
+        config.rec_name = get_moleculetype_name(config.rec_top)
+        print(f"  Auto-detected receptor name: {config.rec_name}")
+    
+    if config.lig_name is None:
+        config.lig_name = get_moleculetype_name(config.lig_itp)
+        print(f"  Auto-detected ligand name: {config.lig_name}")
+    
+    if config.sys_name is None:
+        config.sys_name = f"{prefix}.pdb_ali_best"
+        print(f"  Auto-generated system name: {config.sys_name}")
+    
+    create_system_topology(config)
+    
+    print("\n" + "=" * 60)
+    print("SUMMARY: Files created")
+    print("=" * 60)
+    print(f"  Ligand GRO:    {config.lig_gro}")
+    print(f"  Combined GRO:  {config.com_gro}")
+    print(f"  Receptor ITP:  {config.rec_itp}")
+    print(f"  System TOP:    {config.sys_top}")
+    print("\nDock2com_1 completed successfully!")
+
+
+if __name__ == "__main__":
+    main()

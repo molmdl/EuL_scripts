@@ -2,7 +2,8 @@
 #SBATCH -J pr
 #SBATCH -c 8
 #SBATCH -n 1
-#SBATCH -p workq
+##SBATCH -p workq
+#SBATCH -p l40
 #SBATCH --gres=gpu:1
 
 gmx mdrun -deffnm pr -ntmpi 1 -ntomp 8 -bonded gpu -nb gpu -update gpu -pme gpu -cpt 5

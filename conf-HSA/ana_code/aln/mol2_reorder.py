@@ -2,41 +2,49 @@
 """
 mol2_reorder.py
 ===============
-Reorder and/or complete atom ordering of molecular structure files to match
-a mol2 template, using graph isomorphism (VF2 via networkx).
+Reorder molecular structure files and/or add back missing hydrogens.
 
-Two modes
----------
-mol2   Reorder a mol2 file so its atom order matches a reference mol2.
-       Atom names, types, charges and bond table come from the reference;
-       coordinates come from the input mol2.
+Mode: mol2
+    Reorder a mol2 file to match a reference mol2 atom ordering.
+    Output: mol2 with atom names/types/charges from template, coords from input.
 
-sdf    Take a docking result SDF (Gnina / Vina style), select one pose,
-       place back missing C-H hydrogens from the template mol2 using a
-       local-frame reconstruction, and write a properly ordered mol2.
+Mode: sdf
+    Convert an SDF docking pose to mol2. Selects best pose from SDF (default:
+    lowest minimizedAffinity), reconstructs missing C-H hydrogens from template,
+    and writes a properly ordered mol2 file.
 
-       SDF scoring fields understood:
-         minimizedAffinity  Vina score (kcal/mol, lower = better)  [DEFAULT]
-         CNN_VS             CNNaffinity * CNNscore (higher = better)
-         CNNaffinity        binding affinity prediction in pK units  (higher = better)
-         CNNscore           probability pose is within 2 Å of truth  (higher = better)
+    Available scoring metrics:
+      minimizedAffinity  Vina score (kcal/mol) - lower is better
+      CNN_VS             CNNaffinity * CNNscore - higher is better
+      CNNaffinity        binding affinity (pK) - higher is better
+      CNNscore           pose accuracy probability - higher is better
 
-Usage
------
-  # Reorder mol2 to match template:
-  python mol2_reorder.py mol2 -t template.mol2 -i input.mol2 -o output.mol2
+Mode: gro
+    Convert an SDF docking pose to GRO format. Atom ordering matches the ITP file.
+    Optionally uses a mol2 template to reconstruct missing C-H hydrogens.
 
-  # Convert best SDF pose (by minimizedAffinity) to mol2:
-  python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o best_pose.mol2
+Examples
+--------
+    # Mode mol2: reorder atoms in input.mol2 to match template.mol2
+    python mol2_reorder.py mol2 -t template.mol2 -i input.mol2 -o output.mol2
 
-  # Pick specific model number:
-  python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o pose3.mol2 --model 3
+    # Mode sdf: convert best SDF pose to mol2 (by minimizedAffinity)
+    python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o output.mol2
 
-  # Pick best by CNN_VS:
-  python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o best_cnnvs.mol2 --metric CNN_VS
+    # Mode sdf: select specific pose number
+    python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o output.mol2 --model 3
 
-  # List all models with scores:
-  python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf --list-models
+    # Mode sdf: select best pose by CNNscore
+    python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf -o output.mol2 --metric CNNscore
+
+    # Mode sdf: list all poses with scores
+    python mol2_reorder.py sdf -t template.mol2 -i dock_out.sdf --list-models
+
+    # Mode gro: convert SDF to GRO with ITP atom order (with H reconstruction)
+    python mol2_reorder.py gro -i structure.itp -s dock_out.sdf -o output.gro -t template.mol2
+
+    # Mode gro: convert SDF to GRO (heavy atoms only, no template needed)
+    python mol2_reorder.py gro -i structure.itp -s dock_out.sdf -o output.gro
 """
 
 import argparse
@@ -306,6 +314,96 @@ def list_models(models, metrics=None):
         print(row)
 
 
+
+# ---------------------------------------------------------------------------
+# ITP I/O
+# ---------------------------------------------------------------------------
+
+def parse_itp(path):
+    """
+    Parse a GROMACS ITP file.
+
+    Returns
+    -------
+    atoms : list of dict
+        Keys: idx, type, res_num, res_name, atom_name, cgnr, charge, mass
+    """
+    atoms = []
+    in_atoms = False
+
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("["):
+                if "atoms" in line.lower():
+                    in_atoms = True
+                    continue
+                else:
+                    in_atoms = False
+
+            if in_atoms and line and not line.startswith(";"):
+                parts = line.split()
+                if len(parts) >= 8:
+                    try:
+                        atoms.append({
+                            "idx":      int(parts[0]),
+                            "type":     parts[1],
+                            "res_num":  int(parts[2]),
+                            "res_name": parts[3],
+                            "atom_name": parts[4],
+                            "cgnr":     int(parts[5]),
+                            "charge":   float(parts[6]),
+                            "mass":     float(parts[7]),
+                        })
+                    except ValueError:
+                        continue
+
+    return atoms
+
+
+def _itp_element(atom_type):
+    """Extract element symbol from ITP atom type."""
+    type_map = {
+        "cl": "Cl", "cl": "Cl",
+        "ca": "C", "ce": "C", "c": "C", "c3": "C",
+        "o": "O", "n": "N", "n2": "N",
+        "ha": "H", "h1": "H", "h": "H",
+    }
+    return type_map.get(atom_type.lower(), atom_type[0].upper())
+
+
+# ---------------------------------------------------------------------------
+# GRO I/O
+# ---------------------------------------------------------------------------
+
+def write_gro(path, atoms, title="Generated", box=None):
+    """
+    Write a GRO file.
+
+    atoms : list of dicts with keys idx, atom_name, res_num, res_name, x, y, z
+            coordinates in angstrom (will be converted to nm)
+    box   : optional 3-element list/array for box vectors (in nm)
+    """
+    _no_overwrite(path)
+    with open(path, "w") as fh:
+        fh.write(f"{title}\n")
+        fh.write(f"{len(atoms)}\n")
+        for a in atoms:
+            x_nm = a["x"] * 0.1
+            y_nm = a["y"] * 0.1
+            z_nm = a["z"] * 0.1
+            fh.write(
+                f"{a['res_num']:>5d}{a['res_name']:<5s}"
+                f"{a['atom_name']:>5s}{a['idx']:>5d}"
+                f"{x_nm:>8.3f}{y_nm:>8.3f}{z_nm:>8.3f}\n"
+            )
+        if box is not None:
+            fh.write(f"{box[0]:>10.5f}{box[1]:>10.5f}{box[2]:>10.5f}\n")
+        else:
+            fh.write("   0.00000   0.00000   0.00000\n")
+
+
+
 # ---------------------------------------------------------------------------
 # Graph utilities
 # ---------------------------------------------------------------------------
@@ -338,7 +436,7 @@ def _build_graph(atoms, bonds, heavy_only=False):
 
 
 def _node_match(n1, n2):
-    return n1["element"] == n2["element"]
+    return n1["element"].upper() == n2["element"].upper()
 
 
 def find_isomorphism(G_ref, G_src):
@@ -514,6 +612,7 @@ def reorder_mol2_to_mol2(ref_path, src_path, out_path):
     print(f"Written: {out_path}")
 
 
+
 # ---------------------------------------------------------------------------
 # Core: SDF pose -> mol2
 # ---------------------------------------------------------------------------
@@ -685,6 +784,213 @@ def sdf_pose_to_mol2(
     write_mol2(out_path, out_atoms, ref_bonds, ref_header)
     print(f"Written: {out_path}")
 
+# ---------------------------------------------------------------------------
+# Core: SDF pose -> GRO
+# ---------------------------------------------------------------------------
+
+def sdf_pose_to_gro(
+    itp_path, sdf_path, out_path,
+    mol2_template_path=None,
+    metric=DEFAULT_METRIC, model_num=None
+):
+    """
+    Convert one SDF pose to a GRO file, matching atom order from ITP.
+    """
+    _no_overwrite(out_path)
+
+    print(f"Parsing ITP:         {itp_path}")
+    itp_atoms = parse_itp(itp_path)
+    print(f"  {len(itp_atoms)} atoms")
+
+    mol2_atoms = None
+    mol2_bonds = None
+    if mol2_template_path:
+        print(f"Parsing mol2 template: {mol2_template_path}")
+        mol2_atoms, mol2_bonds, _ = parse_mol2(mol2_template_path)
+        print(f"  {len(mol2_atoms)} atoms, {len(mol2_bonds)} bonds")
+
+    print(f"Parsing SDF:        {sdf_path}")
+    models = parse_sdf(sdf_path)
+    print(f"  {len(models)} models found")
+
+    model = select_model(models, metric=metric, model_num=model_num)
+    sc = model["scores"]
+    print(
+        f"  Selected model {model['model_num']}  "
+        f"minimizedAffinity={sc.get('minimizedAffinity', float('nan')):.4f}  "
+        f"CNNscore={sc.get('CNNscore', float('nan')):.4f}  "
+        f"CNNaffinity={sc.get('CNNaffinity', float('nan')):.4f}  "
+        f"CNN_VS={sc.get('CNN_VS', float('nan')):.4f}"
+    )
+
+    sdf_atoms = model["atoms"]
+    sdf_bonds = model["bonds"]
+
+    sdf_by_idx = {a["idx"]: a for a in sdf_atoms}
+    sdf_adj = defaultdict(list)
+    for b in sdf_bonds:
+        sdf_adj[b["a1"]].append(b["a2"])
+        sdf_adj[b["a2"]].append(b["a1"])
+
+    new_coords = {}
+
+    if mol2_atoms:
+        ref_atoms = mol2_atoms
+        ref_bonds = mol2_bonds
+        
+        ref_heavy = [a for a in ref_atoms if a["element"] != "H"]
+        ref_heavy_idx = {a["idx"] for a in ref_heavy}
+        ref_heavy_bonds = [b for b in ref_bonds
+                           if b["a1"] in ref_heavy_idx and b["a2"] in ref_heavy_idx]
+
+        sdf_heavy = [{"idx": a["idx"], "element": a["el"]}
+                     for a in sdf_atoms if a["el"] != "H"]
+        sdf_heavy_bonds = [{"a1": b["a1"], "a2": b["a2"]}
+                           for b in sdf_bonds
+                           if sdf_by_idx[b["a1"]]["el"] != "H"
+                           and sdf_by_idx[b["a2"]]["el"] != "H"]
+
+        G_ref_h = _build_graph(ref_heavy, ref_heavy_bonds)
+        G_sdf_h = _build_graph(sdf_heavy, sdf_heavy_bonds)
+        mapping = find_isomorphism(G_ref_h, G_sdf_h)
+
+        itp_to_sdf = {}
+        for itp_a in itp_atoms:
+            itp_idx = itp_a["idx"]
+            if itp_idx in mapping:
+                itp_to_sdf[itp_idx] = mapping[itp_idx]
+
+        ref_by_idx = {a["idx"]: a for a in ref_atoms}
+        ref_adj = defaultdict(list)
+        for b in ref_bonds:
+            ref_adj[b["a1"]].append(b["a2"])
+            ref_adj[b["a2"]].append(b["a1"])
+
+        sdf_n_h_map = defaultdict(list)
+        for a in sdf_atoms:
+            if a["el"] == "N":
+                for nb_idx in sdf_adj[a["idx"]]:
+                    if sdf_by_idx[nb_idx]["el"] == "H":
+                        sdf_n_h_map[a["idx"]].append(nb_idx)
+
+        used_sdf_h = set()
+
+        for itp_idx, sdf_idx in itp_to_sdf.items():
+            sdf_a = sdf_by_idx[sdf_idx]
+            new_coords[itp_idx] = (sdf_a["x"], sdf_a["y"], sdf_a["z"])
+
+        for itp_a in itp_atoms:
+            itp_idx = itp_a["idx"]
+            if _itp_element(itp_a["type"]) == "H":
+                if itp_idx in ref_by_idx and ref_by_idx[itp_idx]["element"] == "H":
+                    ref_h = ref_by_idx[itp_idx]
+                    heavy_nbrs_ref = [ref_by_idx[n] for n in ref_adj[ref_h["idx"]]
+                                      if ref_by_idx[n]["element"] != "H"]
+                    if not heavy_nbrs_ref:
+                        new_coords[itp_idx] = (ref_h["x"], ref_h["y"], ref_h["z"])
+                        continue
+
+                    parent_ref = heavy_nbrs_ref[0]
+
+                    if parent_ref["element"] == "N":
+                        sdf_parent_idx = mapping.get(parent_ref["idx"])
+                        if sdf_parent_idx:
+                            avail_sdf_h = [h for h in sdf_n_h_map[sdf_parent_idx]
+                                           if h not in used_sdf_h]
+                            if avail_sdf_h:
+                                sdf_h = sdf_by_idx[avail_sdf_h[0]]
+                                used_sdf_h.add(avail_sdf_h[0])
+                                new_coords[itp_idx] = (sdf_h["x"], sdf_h["y"], sdf_h["z"])
+                                continue
+
+                    sdf_parent_idx = mapping.get(parent_ref["idx"])
+                    if sdf_parent_idx is None:
+                        new_coords[itp_idx] = (ref_h["x"], ref_h["y"], ref_h["z"])
+                        continue
+
+                    new_parent_coord = np.array(new_coords[parent_ref["idx"]])
+
+                    other_heavy_ref = [ref_by_idx[n] for n in ref_adj[parent_ref["idx"]]
+                                       if n != ref_h["idx"] and ref_by_idx[n]["element"] != "H"]
+
+                    other_heavy_new_coords = []
+                    for oh in other_heavy_ref:
+                        if oh["idx"] in new_coords:
+                            other_heavy_new_coords.append(np.array(new_coords[oh["idx"]]))
+                        else:
+                            other_heavy_new_coords.append(_get_coord(oh))
+
+                    new_h_xyz = place_h_from_template(
+                        parent_ref, ref_h, other_heavy_ref,
+                        new_parent_coord, other_heavy_new_coords,
+                    )
+                    new_coords[itp_idx] = tuple(new_h_xyz)
+                else:
+                    new_coords[itp_idx] = (0.0, 0.0, 0.0)
+    else:
+        itp_heavy = [a for a in itp_atoms if _itp_element(a["type"]) != "H"]
+        
+        sdf_heavy = [{"idx": a["idx"], "element": a["el"]}
+                     for a in sdf_atoms if a["el"] != "H"]
+        sdf_heavy_bonds = [{"a1": b["a1"], "a2": b["a2"]}
+                           for b in sdf_bonds
+                           if sdf_by_idx[b["a1"]]["el"] != "H"
+                           and sdf_by_idx[b["a2"]]["el"] != "H"]
+
+        from collections import Counter
+        itp_elems = Counter(_itp_element(a["type"]) for a in itp_heavy)
+        sdf_elems = Counter(a["element"] for a in sdf_heavy)
+
+        if itp_elems != sdf_elems:
+            raise ValueError(
+                f"Element counts mismatch: ITP={dict(itp_elems)}, SDF={dict(sdf_elems)}"
+            )
+
+        itp_heavy_by_elem = defaultdict(list)
+        for a in itp_heavy:
+            itp_heavy_by_elem[_itp_element(a["type"]).upper()].append(a)
+
+        sdf_heavy_by_elem = defaultdict(list)
+        for a in sdf_heavy:
+            sdf_heavy_by_elem[a["element"].upper()].append(a)
+
+        sdf_degrees = {}
+        for a in sdf_heavy:
+            deg = sum(1 for b in sdf_heavy_bonds if b["a1"] == a["idx"] or b["a2"] == a["idx"])
+            sdf_degrees[a["idx"]] = deg
+
+        mapping = {}
+        for elem, itp_list in itp_heavy_by_elem.items():
+            sdf_list = sdf_heavy_by_elem[elem]
+            itp_sorted = sorted(itp_list, key=lambda x: x["idx"])
+            sdf_sorted = sorted(sdf_list, key=lambda a: sdf_degrees.get(a["idx"], 0))
+            for itp_a, sdf_a in zip(itp_sorted, sdf_sorted):
+                mapping[itp_a["idx"]] = sdf_a["idx"]
+
+        for itp_idx, sdf_idx in mapping.items():
+            sdf_a = sdf_by_idx[sdf_idx]
+            new_coords[itp_idx] = (sdf_a["x"], sdf_a["y"], sdf_a["z"])
+
+    out_atoms = []
+    for i, itp_a in enumerate(itp_atoms, 1):
+        if itp_a["idx"] in new_coords:
+            x, y, z = new_coords[itp_a["idx"]]
+        else:
+            x, y, z = 0.0, 0.0, 0.0
+
+        out_atoms.append({
+            "idx": i,
+            "atom_name": itp_a["atom_name"],
+            "res_num": itp_a["res_num"],
+            "res_name": itp_a["res_name"],
+            "x": x,
+            "y": y,
+            "z": z,
+        })
+
+    write_gro(out_path, out_atoms)
+    print(f"Written: {out_path}")
+
 
 # ---------------------------------------------------------------------------
 # Safety helper
@@ -749,6 +1055,36 @@ def build_parser():
     p_sdf.add_argument("--list-models", action="store_true",
                        help="Print all models with scores and exit.")
 
+    # --- gro subcommand ---
+    p_gro = sub.add_parser(
+        "gro",
+        help="Convert an SDF docking pose to GRO, matching ITP atom order.",
+    )
+    p_gro.add_argument("-i", "--itp", required=True, metavar="ITP",
+                       help="ITP file defining atom order.")
+    p_gro.add_argument("-s", "--sdf", required=True, metavar="SDF",
+                       help="Input SDF docking result.")
+    p_gro.add_argument("-o", "--output", required=True, metavar="GRO",
+                       help="Output GRO filename (must not exist).")
+    p_gro.add_argument("-t", "--template", default=None, metavar="MOL2",
+                       help="Optional mol2 template for H reconstruction.")
+    p_gro.add_argument("--model", type=int, default=None, metavar="N",
+                       help="Select a specific model number (1-based). "
+                            "Default: auto-select by --metric.")
+    p_gro.add_argument(
+        "--metric",
+        default=DEFAULT_METRIC,
+        metavar="NAME",
+        help=(
+            f"Score field to optimise when --model is not given. "
+            f"Default: '{DEFAULT_METRIC}' (lower is better). "
+            f"Other useful choices: CNN_VS, CNNaffinity, CNNscore "
+            f"(all higher is better)."
+        ),
+    )
+    p_gro.add_argument("--list-models", action="store_true",
+                       help="Print all models with scores and exit.")
+
     return parser
 
 
@@ -770,6 +1106,20 @@ def main():
             ref_path=args.template,
             sdf_path=args.input,
             out_path=args.output,
+            metric=args.metric,
+            model_num=args.model,
+        )
+
+    elif args.mode == "gro":
+        models = parse_sdf(args.sdf)
+        if args.list_models:
+            list_models(models)
+            return
+        sdf_pose_to_gro(
+            itp_path=args.itp,
+            sdf_path=args.sdf,
+            out_path=args.output,
+            mol2_template_path=args.template,
             metric=args.metric,
             model_num=args.model,
         )
