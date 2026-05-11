@@ -329,7 +329,7 @@ print(u.trajectory.units)  # {'length': 'nm', 'time': 'ps'}
 - MDAnalysis Documentation - Fitting transformations: https://docs.mdanalysis.org/stable/documentation_pages/transformations/fit.html
 
 ### Secondary (MEDIUM confidence)
-- Test files analyzed: `~/dparker/dp_xinyi/ana_code/com_ana_trj/index.ndx` - Verified index groups available
+- Test files analyzed: `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/index.ndx` - Verified index groups available
 
 ## Metadata
 

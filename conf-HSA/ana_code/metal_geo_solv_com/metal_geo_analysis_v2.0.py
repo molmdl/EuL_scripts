@@ -1026,26 +1026,6 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
         fa = all_hists[name][2]
         ax.plot(bin_ctrs, fa, color=col, lw=1.8, alpha=0.90)
         ax.fill_between(bin_ctrs, fa, alpha=0.12, color=col)
-
-    # Annotate Tc peak value (all-frame distribution)
-    tc_name = tnames[-1]
-    tc_all = all_hists[tc_name][2]
-    tc_peak_idx = int(np.nanargmax(tc_all))
-    tc_peak_x = float(bin_ctrs[tc_peak_idx])
-    tc_peak_y = float(tc_all[tc_peak_idx])
-    ax.scatter([tc_peak_x], [tc_peak_y], color=TOR_COLS[-1], s=30, zorder=5)
-    ax.annotate(
-        f'Tc peak: {tc_peak_x:.1f}° ({tc_peak_y:.1f}%)',
-        xy=(tc_peak_x, tc_peak_y),
-        xytext=(10, 8),
-        textcoords='offset points',
-        fontsize=9,
-        color=TOR_COLS[-1],
-        ha='left',
-        va='bottom',
-        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.75),
-    )
-
     ax.axvline(0, color='k', lw=0.6, ls='--', alpha=0.5)
     ax.set_xlabel('Torsion angle (°)', fontsize=11)
     ax.set_ylabel('Probability (%)', fontsize=11)

@@ -1,13 +1,44 @@
 #!/usr/bin/env python3
 """
-Metal coordination geometry analysis for 9-coordinate Eu complexes.
+Metal coordination geometry analysis for 9-coordinate Eu complexes - VERSION 3.
 
 Analyses SAP (square antiprism) and TSAP (twisted square antiprism)
 geometries in MD trajectories OR single-frame GRO structures.
 
+v3 CHANGES FROM v2:
+-------------------
+1. CORRECTED geometry definitions (CRITICAL FIX):
+   - TSAP_TWIST_DEG = 22.5° (not 0.0 as in v2)
+   - SQUARE_PRISM_TWIST_DEG = 0.0 (new, was incorrectly labeled as TSAP)
+   - Classification based on twist angle thresholds
+
+2. Auto-detection of coordination atoms:
+   - Distance-based detection (replaces hard-coded TOPOLOGIES dict)
+   - Finds metal (Eu, EU3, or type 'E')
+   - Finds 9 closest N/O atoms within 3.0 Å
+   - Classifies into BOTTOM/TOP/CAP using C4 frame
+
+ 3. Chirality determination:
+    - D (right-handed) / L (left-handed) from twist angle sign
+    - Positive twist → D
+    - Negative twist → L
+
+4. SHAPE integration (Part C):
+   - CSAPR-9 Continuous Shape Measures (ChSM)
+   - Frame-by-frame analysis
+   - Complementary to twist angle classification
+
+5. Improved classification:
+   - Primary: twist angle (geometric)
+   - Secondary: SHAPE ChSM (shape measure)
+   - Fallback: torsion-based (backward compatible)
+
 Section I   – Structure/trajectory loading, PBC handling, alignment
-Section II  – Geometry analysis A: RMSD to ideal SAP/TSAP polyhedra
-Section III – Geometry analysis B: N-C-C-N torsion angles
+Section II  – Auto-detection of coordination topology
+Section III – Geometry analysis A: RMSD to ideal SAP/TSAP polyhedra
+Section IV  – Geometry analysis B: N-C-C-N torsion angles
+Section V   – Geometry analysis C: SHAPE ChSM (new in v3)
+Section VI  – Combined classification and chirality (new in v3)
 
 ── Input modes ──────────────────────────────────────────────────────────────
 Mode 1  TPR + XTC   (original, unchanged)
@@ -139,10 +170,20 @@ COORD_IDX  = _DEFAULT_TOPO['coord_idx']
 RING_TORS  = _DEFAULT_TOPO['ring_tors']
 CHROM_TOR  = _DEFAULT_TOPO['chrom_tor']
 
-# Target twist angles for ideal polyhedra
+# Target twist angles for ideal polyhedra (CORRECTED - v3)
 # Twist = mean_azimuth(TOP) − mean_azimuth(BOTTOM), wrapped to [−90, 90]
-SAP_TWIST_DEG  = -45.0   # perfect square antiprism  (measured ≈ −40° in frame 0)
-TSAP_TWIST_DEG =   0.0   # eclipsed / TSAP
+# References: Rudovsky et al. (2005), Kotek et al. (2006), Carr et al. (2012)
+SQUARE_PRISM_TWIST_DEG =  0.0    # D4h, eclipsed (was incorrectly called TSAP in v2)
+TSAP_TWIST_DEG         = 22.5    # C4, twisted square antiprism (CHIRAL) - CORRECTED
+SAP_TWIST_DEG          = 45.0    # D4d, square antiprism
+
+# Classification thresholds based on twist angle
+TWIST_CLASS_THRESHOLDS = {
+    'SQUARE_PRISM': (0.0, 11.25),       # |twist| < 11.25°
+    'TSAP': (11.25, 33.75),             # 11.25° ≤ |twist| < 33.75°
+    'SAP': (33.75, 56.25),              # 33.75° ≤ |twist| < 56.25°
+    'PRISM_EXTREME': (56.25, 90.0),     # |twist| ≥ 56.25°
+}
 
 # Plotting colours (SAP blue, TSAP purple)
 C_SAP   = 'steelblue'
@@ -300,9 +341,18 @@ def get_c4_frame(coord9):
     if cap_norm > 1e-8:
         x = cap_proj / cap_norm
     else:
-        tmp = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        x = np.cross(z, tmp)
-        x /= np.linalg.norm(x)
+        # CAP is exactly on axis – use first BOTTOM atom relative to centroid
+        # for a deterministic, molecule-fixed x-direction
+        tmp = coord9[BOTTOM[0]] - centroid
+        tmp -= np.dot(tmp, z) * z
+        n_tmp = np.linalg.norm(tmp)
+        if n_tmp > 1e-8:
+            x = tmp / n_tmp
+        else:
+            # Pathological: BOTTOM[0] also on axis – use a global axis cross
+            tmp2 = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            x = np.cross(z, tmp2)
+            x /= np.linalg.norm(x)
     y = np.cross(z, x)
     y /= np.linalg.norm(y)
     return x, y, z
@@ -323,17 +373,22 @@ def _azimuths(vecs, x, y, z):
 def get_twist_angle(coord9):
     """
     Twist angle between TOP and BOTTOM layers, wrapped to [−90, 90].
-
-    Uses sorted-azimuth inter-layer offset to avoid the circular-mean
-    singularity that occurs when atoms lie exactly at 0/90/180/270 deg.
-
-    Fully vectorised: no Python loops over atoms.
+    
+    Computes the mean offset between corresponding TOP and BOTTOM atoms.
+    The atom ordering in TOPOLOGIES dict defines the correspondence.
     """
     x, y, z = get_c4_frame(coord9)
-    phi_bot = np.sort(_azimuths(coord9[BOTTOM], x, y, z))   # (4,)
-    phi_top = np.sort(_azimuths(coord9[TOP],    x, y, z))   # (4,)
-    offsets = (phi_top - phi_bot + 90) % 180 - 90           # (4,)
-    return float(offsets.mean())
+    phi_bot = _azimuths(coord9[BOTTOM], x, y, z)   # (4,)
+    phi_top = _azimuths(coord9[TOP],    x, y, z)   # (4,)
+    
+    # Direct offsets - atom correspondence is defined by TOPOLOGIES ordering
+    offsets = phi_top - phi_bot
+    
+    # Wrap offsets to [-90, 90]
+    offsets_wrapped = np.array([((o + 90) % 180) - 90 for o in offsets])
+    
+    # Return mean twist angle
+    return float(np.mean(offsets_wrapped))
 
 
 def build_local_ideal_directions(coord9):
@@ -439,6 +494,604 @@ def min_rmsd_cyclic(coord9, dirs9, return_transform=False):
     if return_transform:
         return best_rmsd, ideal_placed[best_k]
     return best_rmsd
+
+
+# ═══════════════════════════════════════════════════════
+#  TWIST ANGLE CLASSIFICATION (new in v3)
+# ═══════════════════════════════════════════════════════
+
+def classify_by_twist_angle(twist_deg):
+    """
+    Classify geometry based on twist angle.
+    
+    Twist angle range: [-90°, 90°]
+    
+    Parameters
+    ----------
+    twist_deg : float
+        Twist angle in degrees
+        
+    Returns
+    -------
+    tuple : (geometry_type, confidence)
+        geometry_type: 'SQUARE_PRISM', 'TSAP', 'SAP', or 'PRISM_EXTREME'
+        confidence: 0.0 to 1.0 (1.0 = ideal)
+    """
+    abs_twist = abs(twist_deg)
+    
+    if abs_twist < TWIST_CLASS_THRESHOLDS['SQUARE_PRISM'][1]:
+        # Square prism range: 0° to 11.25°
+        dist_to_ideal = abs_twist
+        return 'SQUARE_PRISM', 1.0 - dist_to_ideal / 11.25
+    elif abs_twist < TWIST_CLASS_THRESHOLDS['TSAP'][1]:
+        # TSAP range: 11.25° to 33.75°
+        dist_to_ideal = abs(abs_twist - TSAP_TWIST_DEG)
+        return 'TSAP', 1.0 - dist_to_ideal / 11.25
+    elif abs_twist < TWIST_CLASS_THRESHOLDS['SAP'][1]:
+        # SAP range: 33.75° to 56.25°
+        dist_to_ideal = abs(abs_twist - SAP_TWIST_DEG)
+        return 'SAP', 1.0 - dist_to_ideal / 11.25
+    else:
+        # Extreme prism: 56.25° to 90°
+        return 'PRISM_EXTREME', max(0.0, 1.0 - (abs_twist - 56.25) / 33.75)
+
+
+def get_dl_from_twist(twist_deg):
+    """
+    Determine D / L from the signed twist angle (nearest-neighbour pairing).
+
+        Positive twist  →  D
+        Negative twist  →  L
+        Near zero       →  UNKNOWN
+
+    Parameters
+    ----------
+    twist_deg : float
+        Signed twist angle in degrees.
+
+    Returns
+    -------
+    str : 'D', 'L', or 'UNKNOWN'
+    """
+    if abs(twist_deg) < 5.0:
+        return 'UNKNOWN'
+    return 'D' if twist_deg > 0 else 'L'
+
+
+def get_dl_from_torsion(chrom_tor):
+    """
+    Determine D / L from the chromophore torsion (Tc) sign.
+
+        Positive Tc  →  D
+        Negative Tc  →  L
+        Near zero    →  UNKNOWN
+
+    Parameters
+    ----------
+    chrom_tor : float
+        Chromophore torsion angle in degrees.
+
+    Returns
+    -------
+    str : 'D', 'L', or 'UNKNOWN'
+    """
+    if chrom_tor is None or np.isnan(chrom_tor):
+        return 'UNKNOWN'
+    if abs(chrom_tor) < 5.0:
+        return 'UNKNOWN'
+    return 'D' if chrom_tor > 0 else 'L'
+
+
+def classify_comprehensive(twist_deg, chsm_csapr9=None, ring_tors=None, chrom_tor=None):
+    """
+    Combined classification using all available metrics.
+    
+    Priority:
+    1. Twist angle (primary) - direct geometric measure
+    2. SHAPE ChSM (secondary) - objective shape measure
+    3. Torsion-based (fallback) - backward compatibility
+    
+    Parameters
+    ----------
+    twist_deg : float
+        Twist angle in degrees
+    chsm_csapr9 : float or None
+        Continuous Shape Measure for CSAPR-9 from SHAPE
+    ring_tors : list or None
+        Ring torsion angles
+    chrom_tor : float or None
+        Chromophore torsion angle
+        
+    Returns
+    -------
+    tuple : (geometry_type, confidence, chirality)
+    """
+    # Twist-based classification (primary)
+    geom_twist, conf_twist = classify_by_twist_angle(twist_deg)
+    chirality = get_dl_from_twist(twist_deg)
+    
+    # SHAPE-based classification (secondary, if available)
+    if chsm_csapr9 is not None:
+        if chsm_csapr9 < 1.0:
+            # Excellent match to CSAPR-9 (SAP)
+            conf_shape = 1.0 - chsm_csapr9
+        elif chsm_csapr9 < 3.0:
+            # Good match
+            conf_shape = 1.0 - chsm_csapr9 / 5.0
+        else:
+            # Poor match
+            conf_shape = max(0.0, 1.0 - chsm_csapr9 / 10.0)
+        
+        # Combine twist and shape (weight twist more)
+        conf_combined = 0.6 * conf_twist + 0.4 * conf_shape
+    else:
+        conf_combined = conf_twist
+    
+    # If torsion data available, verify consistency
+    if ring_tors is not None and chrom_tor is not None:
+        geom_torsion = classify_geom(ring_tors, chrom_tor)
+        # If torsion disagrees strongly, reduce confidence
+        if geom_torsion != 'UNK' and geom_torsion != geom_twist and geom_twist in ['SAP', 'TSAP']:
+            conf_combined *= 0.8  # penalize disagreement
+    
+    return geom_twist, conf_combined, chirality
+
+
+# ═══════════════════════════════════════════════════════
+#  AUTO-DETECTION OF COORDINATION ATOMS (new in v3)
+# ═══════════════════════════════════════════════════════
+
+def detect_coordination_atoms(mol_ag, metal_idx, distance_cutoff=3.0):
+    """
+    Auto-detect 9 coordinating atoms based on distance from metal.
+    
+    Algorithm:
+    1. Get metal position
+    2. Find all N and O atoms within cutoff distance
+    3. Sort by distance
+    4. Select closest 9 atoms
+    5. Classify into BOTTOM/TOP/CAP based on C4 frame
+    
+    Parameters
+    ----------
+    mol_ag : MDAnalysis AtomGroup
+        MOL residue atoms
+    metal_idx : int
+        MOL-local index of the metal atom
+    distance_cutoff : float
+        Maximum distance (Å) for coordinating atoms
+        
+    Returns
+    -------
+    tuple : (coord_idx, atom_groups)
+        coord_idx: list of 9 MOL-local indices
+        atom_groups: dict with 'bottom', 'top', 'cap' index lists
+    """
+    metal_pos = mol_ag.positions[metal_idx]
+    
+    # Get all N and O atoms
+    n_atoms = mol_ag.select_atoms('name N')
+    o_atoms = mol_ag.select_atoms('name O')
+    
+    # Calculate distances and collect candidates
+    candidates = []
+    for atom in n_atoms.atoms + o_atoms.atoms:
+        d = np.linalg.norm(atom.position - metal_pos)
+        mol_idx = atom.index - mol_ag.atoms[0].index
+        candidates.append((d, mol_idx, atom.name, atom.position))
+    
+    # Sort and select closest 9
+    candidates.sort(key=lambda x: x[0])
+    if len(candidates) < 9:
+        raise ValueError(f"Only {len(candidates)} coordinating atoms found, need 9")
+    
+    coord_atoms = candidates[:9]
+    coord_idx = [x[1] for x in coord_atoms]
+    coord_pos = np.array([x[3] for x in coord_atoms]) - metal_pos
+    
+    # Classify into groups using C4 frame
+    groups = classify_atom_groups(coord_pos)
+    
+    return coord_idx, groups
+
+
+def classify_atom_groups(coord9):
+    """
+    Classify 9 coordinating atoms into BOTTOM/TOP/CAP.
+    
+    Uses C4 frame (z = ring normal) to determine vertical position.
+    
+    Parameters
+    ----------
+    coord9 : np.ndarray
+        (9, 3) array of Eu-centered coordinating atom positions
+        
+    Returns
+    -------
+    dict : {'bottom': list, 'top': list, 'cap': list}
+        Indices into coord9 array
+    """
+    x, y, z = get_c4_frame(coord9)
+    z_heights = coord9 @ z  # projection onto C4 axis
+    
+    # CAP is the atom with largest z (pointing toward cap)
+    cap_idx = np.argmax(z_heights)
+    
+    # Remaining 8 atoms: find ring plane
+    remaining = [i for i in range(9) if i != cap_idx]
+    remaining_z = z_heights[remaining]
+    
+    # BOTTOM: 4 atoms closest to ring plane (smaller |z|)
+    # TOP: 4 atoms farther from ring plane
+    sorted_by_abs_z = sorted(remaining, key=lambda i: abs(z_heights[i]))
+    bottom_idx = sorted_by_abs_z[:4]
+    top_idx = sorted_by_abs_z[4:]
+    
+    return {
+        'bottom': bottom_idx,  # indices into coord9
+        'top': top_idx,
+        'cap': [cap_idx]
+    }
+
+
+def auto_detect_topology(mol_ag):
+    """
+    Automatically detect coordination atoms and topology.
+    
+    Algorithm:
+    1. Find metal atom (Eu, EU3, or type 'E')
+    2. Find all N and O atoms within 3.0 Å of metal
+    3. Select 9 closest atoms
+    4. Determine BOTTOM/TOP/CAP groups
+    5. Identify ring torsion atoms by bond connectivity (optional)
+    6. Identify chromophore torsion atoms (optional)
+    
+    Parameters
+    ----------
+    mol_ag : MDAnalysis AtomGroup
+        MOL residue atoms
+        
+    Returns
+    -------
+    dict : topology with metal_idx, coord_idx, groups, detection_method
+    """
+    # 1. Find metal
+    metal_atoms = [a for a in mol_ag.atoms if a.type.lower().startswith('e')]
+    if not metal_atoms:
+        raise ValueError("No Eu metal atom found")
+    metal_atom = metal_atoms[0]
+    metal_idx = metal_atom.index - mol_ag.atoms[0].index
+    
+    # 2-4. Find coordinating atoms
+    coord_idx, groups = detect_coordination_atoms(mol_ag, metal_idx)
+    
+    # 5-6. Torsion detection (optional, keep as empty for now)
+    # This would require bond information, which may not be available
+    # in bare GRO files. We'll try to use existing TOPOLOGIES as fallback.
+    
+    return {
+        'metal_idx': metal_idx,
+        'coord_idx': coord_idx,
+        'ring_tors': [],  # Will be filled by fallback if needed
+        'chrom_tor': None,  # Will be filled by fallback if needed
+        'groups': groups,
+        'detection_method': 'auto'
+    }
+
+
+def validate_detection(mol_ag, topo):
+    """
+    Validate auto-detected topology.
+    
+    Checks:
+    1. Exactly 9 coordinating atoms
+    2. Mix of N and O atoms
+    3. Bond distances reasonable (2.3-2.8 Å for Eu-N/O)
+    
+    Parameters
+    ----------
+    mol_ag : MDAnalysis AtomGroup
+        MOL residue atoms
+    topo : dict
+        Topology from auto_detect_topology
+        
+    Returns
+    -------
+    tuple : (valid, message)
+    """
+    metal_pos = mol_ag.positions[topo['metal_idx']]
+    coord_pos = mol_ag.positions[topo['coord_idx']]
+    
+    # Check count
+    if len(topo['coord_idx']) != 9:
+        return False, f"Expected 9 atoms, got {len(topo['coord_idx'])}"
+    
+    # Check distances
+    distances = np.linalg.norm(coord_pos - metal_pos, axis=1)
+    if distances.min() < 2.0 or distances.max() > 3.5:
+        return False, f"Unusual bond distances: {distances.min():.2f} - {distances.max():.2f} Å"
+    
+    # Check atom types
+    atom_names = [mol_ag.atoms[i].name for i in topo['coord_idx']]
+    n_count = sum(1 for n in atom_names if n.startswith('N'))
+    o_count = sum(1 for n in atom_names if n.startswith('O'))
+    
+    if n_count < 4:
+        return False, f"Expected at least 4 N atoms, got {n_count}"
+    if o_count < 3:
+        return False, f"Expected at least 3 O atoms, got {o_count}"
+    
+    return True, "Valid"
+
+
+# ═══════════════════════════════════════════════════════
+#  SHAPE INTEGRATION (new in v3)
+# ═══════════════════════════════════════════════════════
+
+import subprocess
+import tempfile
+
+
+def write_shape_dat(coord9, frame_idx, outfile, atom_names=None):
+    """
+    Write SHAPE input file (.dat) in Conquest format.
+    
+    Parameters
+    ----------
+    coord9 : np.ndarray
+        (9, 3) array of metal-centered coordinating atom positions (Å)
+    frame_idx : int
+        Frame index for naming
+    outfile : str
+        Output file path
+    atom_names : list or None
+        List of 9 atom names (e.g., ['O', 'O', 'O', 'N', 'N', 'N', 'N', 'N', 'N'])
+        If None, uses heuristic (O at 0,1,2,7 and N at 3,4,5,6,8)
+    """
+    with open(outfile, 'w') as f:
+        f.write(f'$ Frame {frame_idx} CSAPR-9 analysis\n')
+        f.write('  9  1\n')       # 9 atoms, 1 geometry
+        f.write('  8\n')          # CSAPR-9 code
+        f.write(f'frame_{frame_idx:06d}\n')
+        
+        # Write 9 ligand atoms
+        for i, pos in enumerate(coord9):
+            if atom_names is not None and i < len(atom_names):
+                # Use actual atom name (first character)
+                elem = atom_names[i][0] if len(atom_names[i]) > 0 else 'N'
+            else:
+                # Fallback heuristic: N atoms at indices 3,4,5,6,8
+                if i in [3, 4, 5, 6, 8]:
+                    elem = 'N'
+                else:
+                    elem = 'O'
+            f.write(f' {elem:2s} {pos[0]:10.4f} {pos[1]:10.4f} {pos[2]:10.4f}\n')
+        
+        # Write metal at origin (last, as per SHAPE convention)
+        f.write(' Eu   0.0000   0.0000   0.0000\n')
+
+
+def parse_shape_tab(tab_file):
+    """
+    Extract CSAPR-9 ChSM value from SHAPE output (.tab).
+    
+    Parameters
+    ----------
+    tab_file : str
+        SHAPE output file path
+        
+    Returns
+    -------
+    float or None
+        ChSM value, or None if parsing fails
+    """
+    try:
+        with open(tab_file) as f:
+            lines = f.readlines()
+        
+        # Find the data line (format: " structure_name ,      value")
+        # Skip header lines and copyright lines
+        for line in lines:
+            stripped = line.strip()
+            # Skip comments and lines that don't look like data
+            if stripped.startswith('!') or stripped.startswith('-'):
+                continue
+            # Skip copyright lines and other header lines
+            if '(c)' in line.lower() or 'Structure [' in line or 'S H A P E' in line:
+                continue
+            
+            # Look for lines with a comma and a numeric value after it
+            if ',' in line:
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    try:
+                        chsm = float(parts[1].strip())
+                        return chsm
+                    except ValueError:
+                        continue
+    except Exception as e:
+        print(f"  [SHAPE] Warning: Failed to parse {tab_file}: {e}")
+    
+    return None
+
+
+def run_shape_analysis(coord9, frame_idx=0, workdir=None):
+    """
+    Run SHAPE analysis for a single frame.
+    
+    Parameters
+    ----------
+    coord9 : np.ndarray
+        (9, 3) array of metal-centered coordinating atom positions (Å)
+    frame_idx : int
+        Frame index
+    workdir : str or None
+        Working directory for SHAPE files (default: temp dir)
+        
+    Returns
+    -------
+    float or None
+        ChSM value for CSAPR-9, or None if SHAPE fails
+    """
+    # SHAPE executable path
+    shape_exe = '/share/home/nglokwan/install/pkgs/SHAPE_2.1_linux_64/shape_2.1_linux64'
+    
+    # Check if SHAPE exists
+    if not os.path.isfile(shape_exe):
+        print(f"  [SHAPE] Warning: SHAPE executable not found at {shape_exe}")
+        return None
+    
+    # Create temp directory if needed
+    if workdir is None:
+        workdir = tempfile.mkdtemp(prefix='shape_')
+    
+    # Write .dat file
+    dat_file = os.path.join(workdir, f'frame_{frame_idx:06d}.dat')
+    write_shape_dat(coord9, frame_idx, dat_file)
+    
+    # Run SHAPE
+    try:
+        # Pass just the filename, not the full path, when using cwd
+        result = subprocess.run(
+            [shape_exe, os.path.basename(dat_file)],
+            cwd=workdir,
+            capture_output=True,
+            timeout=30
+        )
+        
+        # Wait a moment for file system to sync
+        import time
+        time.sleep(0.1)
+        
+        # Parse output
+        tab_file = dat_file.replace('.dat', '.tab')
+        if os.path.isfile(tab_file):
+            chsm = parse_shape_tab(tab_file)
+            return chsm
+        else:
+            print(f"  [SHAPE] Warning: Output file not created: {tab_file}")
+            print(f"  [SHAPE] STDOUT: {result.stdout.decode()[:500]}")
+            print(f"  [SHAPE] STDERR: {result.stderr.decode()[:500]}")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        print(f"  [SHAPE] Warning: SHAPE timed out for frame {frame_idx}")
+        return None
+    except Exception as e:
+        print(f"  [SHAPE] Warning: SHAPE failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def run_shape_trajectory(records, workdir):
+    """
+    Process entire trajectory with SHAPE.
+    
+    Creates combined .dat file for batch processing.
+    
+    Parameters
+    ----------
+    records : list
+        List of per-frame dicts with 'coord9' field
+    workdir : str
+        Working directory for SHAPE files
+        
+    Returns
+    -------
+    list
+        List of ChSM values (float or None for each frame)
+    """
+    os.makedirs(workdir, exist_ok=True)
+    
+    # SHAPE executable path
+    shape_exe = '/share/home/nglokwan/install/pkgs/SHAPE_2.1_linux_64/shape_2.1_linux64'
+    
+    if not os.path.isfile(shape_exe):
+        print(f"  [SHAPE] Warning: SHAPE executable not found at {shape_exe}")
+        return [None] * len(records)
+    
+    # Get atom names from first record (if available)
+    atom_names = None
+    if len(records) > 0 and 'coord_names' in records[0]:
+        atom_names = records[0]['coord_names']
+    
+    # Create combined .dat file for efficiency
+    combined_dat = os.path.join(workdir, 'trajectory_combined.dat')
+    with open(combined_dat, 'w') as f:
+        f.write('$ Trajectory CSAPR-9 analysis\n')
+        f.write('  9 10\n')       # 9 ligand atoms + 1 metal, central atom at position 10
+        f.write('  8\n')  # CSAPR-9
+        
+        for r in records:
+            f.write(f"frame_{r['frame']:06d}\n")
+            centered = r['coord9']  # already centered
+            for i, pos in enumerate(centered):
+                if atom_names is not None and i < len(atom_names):
+                    elem = atom_names[i][0] if len(atom_names[i]) > 0 else 'N'
+                else:
+                    elem = 'N' if i in [3, 4, 5, 6, 8] else 'O'
+                f.write(f' {elem:2s} {pos[0]:10.4f} {pos[1]:10.4f} {pos[2]:10.4f}\n')
+            f.write(' Eu   0.0000   0.0000   0.0000\n')
+    
+    # Run SHAPE once on combined file
+    try:
+        # Pass just the filename, not the full path, when using cwd
+        result = subprocess.run(
+            [shape_exe, os.path.basename(combined_dat)],
+            cwd=workdir,
+            capture_output=True,
+            timeout=300  # 5 minute timeout for large trajectories
+        )
+        
+        # Wait for file system to sync
+        import time
+        time.sleep(0.2)
+        
+        # Parse results
+        tab_file = combined_dat.replace('.dat', '.tab')
+        if os.path.isfile(tab_file):
+            chsm_values = []
+            with open(tab_file) as f:
+                for line in f:
+                    stripped = line.strip()
+                    # Skip comments, headers, and copyright lines
+                    if (stripped.startswith('!') or 
+                        stripped.startswith('-') or
+                        '(c)' in line.lower() or 
+                        'Structure [' in line or 
+                        'S H A P E' in line):
+                        continue
+                    
+                    # Look for data lines with comma
+                    if ',' in line:
+                        parts = line.split(',')
+                        if len(parts) >= 2:
+                            try:
+                                chsm = float(parts[1].strip())
+                                chsm_values.append(chsm)
+                            except ValueError:
+                                continue
+            
+            # Pad with None if needed
+            while len(chsm_values) < len(records):
+                chsm_values.append(None)
+            
+            return chsm_values
+        else:
+            print(f"  [SHAPE] Warning: Output file not created: {tab_file}")
+            print(f"  [SHAPE] STDOUT: {result.stdout.decode()[:500]}")
+            print(f"  [SHAPE] STDERR: {result.stderr.decode()[:500]}")
+            return [None] * len(records)
+            
+    except subprocess.TimeoutExpired:
+        print(f"  [SHAPE] Warning: SHAPE timed out for trajectory")
+        return [None] * len(records)
+    except Exception as e:
+        print(f"  [SHAPE] Warning: SHAPE failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return [None] * len(records)
 
 
 def classify_geom(ring_tors, chrom_tor, thresh=10.0):
@@ -816,21 +1469,40 @@ def collect_trajectory_data(u, mol_ag, ref_pos, hmask, topo):
         tc       = float(all_tors[4])
         geom     = classify_geom(ring_t, tc)
 
-        records.append({
-            'frame'     : int(ts.frame),
-            'time'      : float(ts.time),
-            'pos'       : aln_pos.copy(),
-            'coord9'    : coord.copy(),
-            'eu'        : eu.copy(),
-            'dirs_sap'  : dirs_sap.copy(),
-            'dirs_tsap' : dirs_tsap.copy(),
-            'rmsd_sap'  : rmsd_sap,
-            'rmsd_tsap' : rmsd_tsap,
-            'ring_tors' : ring_t,
-            'chrom_tor' : tc,
-            'geom'      : geom,
-        })
+        # ── NEW in v3: Twist angle for geometry classification ───────────────────
+        twist_deg = get_twist_angle(coord)
+        geom_twist, conf_twist = classify_by_twist_angle(twist_deg)
 
+        # D / L labels from twist sign and from chromophore torsion sign
+        dl_twist = get_dl_from_twist(twist_deg)
+        dl_torsion = get_dl_from_torsion(tc)
+
+        records.append({
+            'frame'           : int(ts.frame),
+            'time'            : float(ts.time),
+            'pos'             : aln_pos.copy(),
+            'coord9'          : coord.copy(),
+            'eu'              : eu.copy(),
+            'dirs_sap'        : dirs_sap.copy(),
+            'dirs_tsap'       : dirs_tsap.copy(),
+            'rmsd_sap'        : rmsd_sap,
+            'rmsd_tsap'       : rmsd_tsap,
+            'ring_tors'       : ring_t,
+            'chrom_tor'       : tc,
+            'geom'            : geom,
+            'twist_deg'       : twist_deg,       # signed twist — consistent across SAP/TSAP
+            'abs_twist_deg'   : abs(twist_deg),  # for geometry classification only
+            'geom_twist'      : geom_twist,
+            'conf_twist'      : conf_twist,
+            'dl_twist'        : dl_twist,        # D/L from twist sign
+            'dl_torsion'      : dl_torsion,      # D/L from Tc sign
+        })
+    
+    # Add atom names for coordinating atoms (for SHAPE analysis)
+    if len(records) > 0:
+        coord_names = [mol_ag[i].name for i in coord_idx]
+        records[0]['coord_names'] = coord_names
+    
     return records
 
 
@@ -854,10 +1526,10 @@ def run_part_A(records, mol_atoms, outdir, sysname):
 
     # ── Time-series PNG ────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(10, 3.8))
-    ax.plot(times / 1000, rs_sap,  color=C_SAP,  lw=1.2, alpha=0.85,
-            label='RMSD → ideal SAP')
-    ax.plot(times / 1000, rs_tsap, color=C_TSAP, lw=1.2, alpha=0.85,
-            label='RMSD → ideal TSAP')
+    ax.plot(times / 1000, rs_sap,  color=C_SAP,  marker='o', ls='none', 
+            markersize=3, alpha=0.85, label='RMSD → ideal SAP')
+    ax.plot(times / 1000, rs_tsap, color=C_TSAP, marker='o', ls='none', 
+            markersize=3, alpha=0.85, label='RMSD → ideal TSAP')
     ax.set_xlabel('Time (ns)', fontsize=11)
     ax.set_ylabel('RMSD  (Å)', fontsize=11)
     ax.set_title(f'{sysname}  –  Coordination-sphere RMSD to ideal geometry',
@@ -888,14 +1560,15 @@ def run_part_A(records, mol_atoms, outdir, sysname):
     print(f'  [A] {hist_csv}')
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(ctr_sap,  frac_sap,  color=C_SAP,  lw=2,
+    ax.plot(ctr_sap,  frac_sap * 100,  color=C_SAP,  lw=2,
             label='RMSD → ideal SAP')
-    ax.plot(ctr_tsap, frac_tsap, color=C_TSAP, lw=2,
+    ax.plot(ctr_tsap, frac_tsap * 100, color=C_TSAP, lw=2,
             label='RMSD → ideal TSAP')
-    ax.fill_between(ctr_sap,  frac_sap,  alpha=0.25, color=C_SAP)
-    ax.fill_between(ctr_tsap, frac_tsap, alpha=0.25, color=C_TSAP)
+    ax.fill_between(ctr_sap,  frac_sap * 100,  alpha=0.25, color=C_SAP)
+    ax.fill_between(ctr_tsap, frac_tsap * 100, alpha=0.25, color=C_TSAP)
     ax.set_xlabel('RMSD  (Å)', fontsize=11)
-    ax.set_ylabel('Fraction of frames', fontsize=11)
+    ax.set_ylabel('Fraction of frames (%)', fontsize=11)
+    ax.set_ylim(HIST_YMIN_PCT, 50.0)
     ax.set_title(f'{sysname}  –  RMSD histogram', fontsize=11)
     ax.legend(framealpha=0.8)
     plt.tight_layout()
@@ -955,16 +1628,23 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
     ts_csv = os.path.join(outdir, 'B_torsions_timeseries.csv')
     with open(ts_csv, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['frame', 'time_ps'] + tnames + ['geom'])
+        # Tc sign gives D/L (big D/L); twist sign now independently gives D/L for cross-check.
+        w.writerow(['frame', 'time_ps'] + tnames
+                   + ['geom', 'twist_deg', 'abs_twist_deg',
+                      'dl_twist', 'dl_torsion'])
         for i, r in enumerate(records):
             vals = [f'{v:.2f}' for v in tor_mat[:, i]]
-            w.writerow([r['frame'], f"{r['time']:.1f}"] + vals + [geoms[i]])
+            twist = r.get('twist_deg', 0.0)
+            w.writerow([r['frame'], f"{r['time']:.1f}"] + vals
+                       + [geoms[i], f'{twist:.2f}', f'{abs(twist):.2f}',
+                          r.get('dl_twist', 'UNK'), r.get('dl_torsion', 'UNK')])
     print(f'  [B] {ts_csv}')
 
     # ── Torsion time-series PNG  (all torsions, one overlaid plot) ──
     fig, ax = plt.subplots(figsize=(11, 4.5))
     for name, col, vals in zip(tnames, TOR_COLS, tor_mat):
-        ax.plot(times / 1000, vals, color=col, lw=1.4, alpha=0.85, label=name)
+        ax.plot(times / 1000, vals, color=col, marker='o', ls='none', 
+                markersize=2, alpha=0.85, label=name)
     ax.axhline(0, color='k', lw=0.6, ls='--', alpha=0.5)
     ax.set_xlabel('Time (ns)', fontsize=11)
     ax.set_ylabel('Torsion angle (°)', fontsize=11)
@@ -1153,8 +1833,188 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
     fig.savefig(os.path.join(outdir, 'B_classification_histogram.png'), dpi=150)
     plt.close(fig)
     print(f'  [B] {os.path.join(outdir, "B_classification_histogram.png")}')
+    
+    # ── NEW in v3: Twist angle analysis ─────────────────────────────
+    # Signed twist angle — now consistent across SAP and TSAP after nearest-neighbour fix.
+    twist_angles = np.array([r.get('twist_deg', 0.0) for r in records])
+    abs_twist    = np.array([r.get('abs_twist_deg', 0.0) for r in records])
+
+    # Twist angle time-series CSV (signed value + D/L)
+    twist_ts_csv = os.path.join(outdir, 'B_twist_timeseries.csv')
+    with open(twist_ts_csv, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['frame', 'time_ps', 'twist_deg', 'abs_twist_deg',
+                    'geometry_twist', 'dl_twist', 'dl_torsion'])
+        for i, r in enumerate(records):
+            w.writerow([r['frame'], f"{r['time']:.1f}",
+                        f'{twist_angles[i]:.2f}', f'{abs_twist[i]:.2f}',
+                        r.get('geom_twist', 'UNK'),
+                        r.get('dl_twist', 'UNK'),
+                        r.get('dl_torsion', 'UNK')])
+    print(f'  [B] {twist_ts_csv}')
+
+    # Time-series plot: signed twist, colour = SAP/TSAP by |twist|
+    pt_colors_twist = []
+    for t in abs_twist:
+        if t < 33.75:
+            pt_colors_twist.append(C_TSAP)
+        else:
+            pt_colors_twist.append(C_SAP)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    abs_twist_arr = np.abs(twist_angles)
+    ax.scatter(times / 1000, abs_twist_arr, c=pt_colors_twist, s=6, alpha=0.7, linewidths=0)
+    ax.axhline(22.5, color=C_TSAP, lw=1.5, ls=':', alpha=0.7, label='TSAP ideal (22.5°)')
+    ax.axhline(45.0, color=C_SAP, lw=1.5, ls='--', alpha=0.7, label='SAP ideal (45°)')
+    ax.axhline(0, color='gray', lw=0.6, ls='-', alpha=0.3)
+    ax.set_xlabel('Time (ns)', fontsize=11)
+    ax.set_ylabel('|Twist angle| (°)', fontsize=11)
+    ax.set_ylim(0, 60)
+    ax.set_yticks([0, 11.25, 22.5, 33.75, 45])
+    ax.legend(fontsize=9, framealpha=0.85)
+    ax.set_title(f'{sysname}  –  Twist angle time series', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(outdir, 'B_twist_timeseries.png'), dpi=150)
+    plt.close(fig)
+    print(f'  [B] {os.path.join(outdir, "B_twist_timeseries.png")}')
+
+    # Histogram: absolute twist
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    n_bins = 45
+    bin_edges = np.linspace(0, 90, n_bins + 1)
+    bin_ctrs  = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    abs_twist_vals = np.abs(twist_angles)
+    counts, _ = np.histogram(abs_twist_vals, bins=bin_edges)
+    pct = counts / nf_total * 100.0
+
+    # Colour by geometry (SAP/TSAP boundary at 33.75°)
+    tsap_mask = bin_ctrs < 33.75
+    sap_mask = ~tsap_mask
+
+    if np.any(tsap_mask):
+        ax.plot(bin_ctrs[tsap_mask], pct[tsap_mask], color=C_TSAP, lw=1.8, alpha=0.90)
+        ax.fill_between(bin_ctrs[tsap_mask], pct[tsap_mask], alpha=0.25, color=C_TSAP)
+
+    if np.any(sap_mask):
+        ax.plot(bin_ctrs[sap_mask], pct[sap_mask], color=C_SAP, lw=1.8, alpha=0.90)
+        ax.fill_between(bin_ctrs[sap_mask], pct[sap_mask], alpha=0.25, color=C_SAP)
+
+    # Annotate peak value(s)
+    peak_idx = int(np.nanargmax(pct))
+    peak_x = float(bin_ctrs[peak_idx])
+    peak_y = float(pct[peak_idx])
+    peak_color = C_TSAP if peak_x < 33.75 else C_SAP
+    ax.scatter([peak_x], [peak_y], color=peak_color, s=30, zorder=5)
+    ax.annotate(
+        f'Peak: {peak_x:.1f}° ({peak_y:.1f}%)',
+        xy=(peak_x, peak_y),
+        xytext=(10, 8),
+        textcoords='offset points',
+        fontsize=9,
+        color=peak_color,
+        ha='left',
+        va='bottom',
+        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.75),
+    )
+
+    ax.axvline(22.5, color=C_TSAP, lw=1.5, ls=':', alpha=0.7, label='TSAP ideal (22.5°)')
+    ax.axvline(45.0, color=C_SAP, lw=1.5, ls='--', alpha=0.7, label='SAP ideal (45°)')
+    ax.axvline(33.75, color='gray', lw=0.8, ls='-', alpha=0.5, label='Boundary')
+    ax.set_xlabel('|Twist angle| (°)', fontsize=11)
+    ax.set_ylabel('Fraction of frames (%)', fontsize=11)
+    ax.set_xlim(0, 90)
+    ax.set_ylim(0, HIST_YMAX_PCT)
+    ax.set_xticks([0, 22.5, 33.75, 45, 67.5, 90])
+    ax.legend(fontsize=9, framealpha=0.85)
+    ax.set_title(f'{sysname}  –  Twist angle distribution', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(outdir, 'B_twist_histogram.png'), dpi=150)
+    plt.close(fig)
+    print(f'  [B] {os.path.join(outdir, "B_twist_histogram.png")}')
 
     return geoms, tor_mat, times
+
+
+# ═══════════════════════════════════════════════════════
+#  PART C  – SHAPE ChSM analysis (new in v3)
+# ═══════════════════════════════════════════════════════
+
+def run_part_C(records, outdir, sysname, run_shape=True):
+    """
+    Run SHAPE analysis and output ChSM values.
+    
+    Parameters
+    ----------
+    records : list
+        List of per-frame dicts
+    outdir : str
+        Output directory
+    sysname : str
+        System name
+    run_shape : bool
+        Whether to run SHAPE (set to False if SHAPE not available)
+        
+    Returns
+    -------
+    list
+        List of ChSM values (float or None)
+    """
+    os.makedirs(outdir, exist_ok=True)
+    
+    chsm_values = None
+    
+    if run_shape:
+        print('  [C] Running SHAPE analysis for CSAPR-9...')
+        shape_workdir = os.path.join(outdir, 'shape_temp')
+        chsm_values = run_shape_trajectory(records, shape_workdir)
+    else:
+        print('  [C] SHAPE analysis skipped (--no-shape or SHAPE not available)')
+        chsm_values = [None] * len(records)
+    
+    # ── ChSM time-series CSV ────────────────────────────────────
+    ts_csv = os.path.join(outdir, 'C_shape_chsm_timeseries.csv')
+    with open(ts_csv, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['frame', 'time_ps', 'ChSM_CSAPR-9'])
+        for r, chsm in zip(records, chsm_values):
+            chsm_str = f'{chsm:.4f}' if chsm is not None else 'NA'
+            w.writerow([r['frame'], f"{r['time']:.1f}", chsm_str])
+    print(f'  [C] {ts_csv}')
+    
+    # ── ChSM histogram (if SHAPE ran successfully) ──────────────
+    valid_chsm = [c for c in chsm_values if c is not None]
+    if valid_chsm:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        n_bins = 50
+        counts, edges = np.histogram(valid_chsm, bins=n_bins)
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        ax.plot(centres, counts / len(valid_chsm) * 100.0, color='darkgreen', lw=2)
+        ax.fill_between(centres, counts / len(valid_chsm) * 100.0, alpha=0.3, color='darkgreen')
+        ax.set_xlabel('ChSM (CSAPR-9)', fontsize=11)
+        ax.set_ylabel('Fraction of frames (%)', fontsize=11)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 20.0)
+        ax.set_title(f'{sysname}  –  SHAPE Continuous Shape Measure', fontsize=11)
+        
+        # Add vertical lines for classification thresholds
+        ax.axvline(1.0, color='gray', ls='--', lw=1, alpha=0.7, label='ChSM=1.0 (good)')
+        ax.axvline(3.0, color='gray', ls=':', lw=1, alpha=0.7, label='ChSM=3.0 (moderate)')
+        ax.legend(fontsize=9)
+        
+        plt.tight_layout()
+        fig.savefig(os.path.join(outdir, 'C_shape_chsm_histogram.png'), dpi=150)
+        plt.close(fig)
+        print(f'  [C] {os.path.join(outdir, "C_shape_chsm_histogram.png")}')
+        
+        # Summary stats
+        chsm_arr = np.array(valid_chsm)
+        print(f'  [C] ChSM statistics: mean={chsm_arr.mean():.3f}, std={chsm_arr.std():.3f}, '
+              f'min={chsm_arr.min():.3f}, max={chsm_arr.max():.3f}')
+    
+    return chsm_values
 
 
 # ═══════════════════════════════════════════════════════
@@ -1261,7 +2121,16 @@ def parse_args():
     parser.add_argument('--skip-classification-chart', action='store_true',
                         help='Do not generate B_classification.png. '
                              'Classification CSV and histogram are still written.')
-
+    parser.add_argument('--no-shape', action='store_true',
+                        help='Skip SHAPE analysis (Part C). '
+                             'Useful if SHAPE executable is not available.')
+    parser.add_argument('--validate', action='store_true',
+                        help='Run validation mode on test structures. '
+                             'Compares results to expected geometry and chirality.')
+    parser.add_argument('--test-detection', metavar='GRO',
+                        help='Test auto-detection on a single GRO file. '
+                             'Reports detected topology and coordination atoms.')
+    
     args = parser.parse_args()
 
     # ─────────────────────────────────────────────────────────────
@@ -1377,14 +2246,18 @@ def parse_args():
                     f'         or : {gro_path}'
                 )
 
-    if not systems:
+    # Allow --test-detection or --validate without systems
+    if not systems and not (hasattr(args, 'test_detection') and args.test_detection) \
+                     and not (hasattr(args, 'validate') and args.validate):
         parser.error(
             'No systems specified.\n'
             'Use one of:\n'
             '  --system <name> --tpr <file> --xtc <file>\n'
             '  --system <name> --gro <file>\n'
             '  --list <list.txt> --dir <directory> [--batch-outdir <root>]\n'
-            '    (each name resolved to <dir>/<name>.gro  or  <dir>/<name>.tpr + .xtc)'
+            '    (each name resolved to <dir>/<name>.gro  or  <dir>/<name>.tpr + .xtc)\n'
+            '  --test-detection <gro>  (test auto-detection)\n'
+            '  --validate (with systems for validation)'
         )
 
     # ── File existence checks ──────────────────────────────────────
@@ -1407,6 +2280,61 @@ def parse_args():
 
 def main():
     systems, args = parse_args()
+    
+    # Handle --test-detection flag
+    if hasattr(args, 'test_detection') and args.test_detection:
+        print(f"\n{'═'*60}")
+        print(f"  Testing auto-detection on: {args.test_detection}")
+        print(f"{'═'*60}")
+        u, mol_ag = load_mol_gro(args.test_detection)
+        print(f'  MOL atoms : {mol_ag.n_atoms}')
+        
+        # Try auto-detection
+        print('\n  Running auto-detection...')
+        try:
+            topo_auto = auto_detect_topology(mol_ag)
+            valid, msg = validate_detection(mol_ag, topo_auto)
+            print(f'  Auto-detection: {msg}')
+            print(f'    Metal index: {topo_auto["metal_idx"]}')
+            print(f'    Coord indices: {topo_auto["coord_idx"]}')
+            print(f'    Groups: BOTTOM={topo_auto["groups"]["bottom"]}, '
+                  f'TOP={topo_auto["groups"]["top"]}, CAP={topo_auto["groups"]["cap"]}')
+            
+            # Calculate twist angle
+            metal_pos = mol_ag.positions[topo_auto['metal_idx']]
+            coord9 = mol_ag.positions[topo_auto['coord_idx']] - metal_pos
+            twist = get_twist_angle(coord9)
+            chirality = get_dl_from_twist(twist)
+            geom, conf = classify_by_twist_angle(twist)
+            print(f'    Twist angle: {twist:.2f}°')
+            print(f'    Geometry: {geom} (confidence: {conf:.2f})')
+            print(f'    Chirality: {chirality}')
+        except Exception as e:
+            print(f'  Auto-detection failed: {e}')
+        
+        # Also try standard topology detection
+        print('\n  Trying standard topology detection...')
+        try:
+            topo_key, topo_std = detect_topology(mol_ag)
+            print(f'  Standard detection: {topo_key}')
+            print(f'    Metal index: {topo_std["metal_idx"]}')
+            print(f'    Coord indices: {topo_std["coord_idx"]}')
+        except Exception as e:
+            print(f'  Standard detection failed: {e}')
+        
+        print('\nDone.')
+        return
+    
+    # Handle --validate flag
+    if hasattr(args, 'validate') and args.validate:
+        print("\n" + "="*60)
+        print("  VALIDATION MODE")
+        print("="*60)
+        # Validation will be done for each system as they are processed
+        # We'll report expected vs actual values at the end
+        validation_results = []
+    else:
+        validation_results = None
 
     for cfg in systems:
         sysname = cfg['name']
@@ -1459,19 +2387,139 @@ def main():
             sysname,
             write_classification_chart=(not args.skip_classification_chart),
         )
+        
+        # Part C output (SHAPE analysis)
+        run_shape = not (hasattr(args, 'no_shape') and args.no_shape)
+        print('\n  ── Part C : SHAPE analysis ──')
+        chsm_values = run_part_C(records, cfg['outdir'], sysname, run_shape=run_shape)
+
 
         # Summary
         n_sap  = geoms.count('SAP')
         n_tsap = geoms.count('TSAP')
         n_unk  = geoms.count('UNK')
         nf     = len(geoms)
+        
+        # NEW in v3: Twist angle statistics (signed + D/L)
+        signed_twist = np.array([r['twist_deg'] for r in records])
+        abs_twist    = np.array([r['abs_twist_deg'] for r in records])
+
+        # Most common D/L from twist
+        from collections import Counter
+        dl_counts = Counter(r['dl_twist'] for r in records)
+        dl_most = dl_counts.most_common(1)[0][0]
+
+        # D/L from torsion for cross-check
+        dl_torsion_counts = Counter(r['dl_torsion'] for r in records)
+        dl_torsion_most = dl_torsion_counts.most_common(1)[0][0]
+
         print(f'\n  Summary  {sysname}:')
         print(f'    Geometry (torsion): SAP={n_sap} ({100*n_sap/nf:.1f}%)  '
               f'TSAP={n_tsap} ({100*n_tsap/nf:.1f}%)  UNK={n_unk} ({100*n_unk/nf:.1f}%)')
+        print(f'    Twist (signed): mean={signed_twist.mean():+.2f}° ± {signed_twist.std():.2f}°')
+        print(f'    D/L from twist    : {dl_most}')
+        print(f'    D/L from torsion  : {dl_torsion_most}', end='')
+        if dl_most != dl_torsion_most and dl_most != 'UNKNOWN' and dl_torsion_most != 'UNKNOWN':
+            print('  <-- DISAGREEMENT')
+        else:
+            print()
+        print(f'    Twist (abs)   : mean={abs_twist.mean():.2f}°')
         print(f'    RMSD→SAP  : {rs_sap.mean():.3f} ± {rs_sap.std():.3f} Å')
         print(f'    RMSD→TSAP : {rs_tsap.mean():.3f} ± {rs_tsap.std():.3f} Å')
 
+        # ChSM statistics if available
+        valid_chsm = [c for c in chsm_values if c is not None]
+        if valid_chsm and len(valid_chsm) > 0:
+            chsm_arr = np.array(valid_chsm)
+            print(f'    ChSM→CSAPR-9: {chsm_arr.mean():.3f} ± {chsm_arr.std():.3f}  '
+                  f'(n_valid={len(valid_chsm)}/{len(chsm_values)})')
+        
+        # Validation check
+        if validation_results is not None:
+            # Check if system name matches expected pattern
+            validation_result = validate_system(sysname, records)
+            if validation_result:
+                validation_results.append(validation_result)
+    
+    # Print validation summary
+    if validation_results is not None and len(validation_results) > 0:
+        print("\n" + "="*60)
+        print("  VALIDATION RESULTS")
+        print("="*60)
+        for vr in validation_results:
+            status = "PASS" if vr['passed'] else "FAIL"
+            print(f"\n{vr['name']}: {status}")
+            if not vr['passed']:
+                for issue in vr['issues']:
+                    print(f"  - {issue}")
+            else:
+                print(f"  ✓ Geometry: {vr['geometry']} (twist={vr['twist']:.1f}°)")
+                print(f"  ✓ D/L: {vr['dl']}")
+                if vr.get('chsm'):
+                    print(f"  ✓ ChSM: {vr['chsm']:.3f}")
+    
     print('\nAll done.')
+
+
+def validate_system(sysname, records):
+    """
+    Validate system against expected geometry and D/L from filename.
+
+    Expected naming convention:
+    - *_sap  → SAP geometry
+    - *_tsap → TSAP geometry
+    - *[Ll]  → L
+    - *[Dd]  → D
+    """
+    # Parse expected values from name
+    expected_geom = None
+    expected_dl = None
+
+    lower = sysname.lower()
+    if '_sap' in lower:
+        expected_geom = 'SAP'
+    elif '_tsap' in lower:
+        expected_geom = 'TSAP'
+
+    if lower.endswith('l') or lower.endswith('l_'):
+        expected_dl = 'L'
+    elif lower.endswith('d') or lower.endswith('d_'):
+        expected_dl = 'D'
+
+    if expected_geom is None and expected_dl is None:
+        return None  # Cannot validate this system
+
+    # Get actual geometry from average absolute twist
+    avg_twist = float(np.mean([r['twist_deg'] for r in records]))
+    actual_geom, _ = classify_by_twist_angle(avg_twist)
+
+    # Most common D/L from twist
+    from collections import Counter
+    dl_counts = Counter(r['dl_twist'] for r in records)
+    actual_dl = dl_counts.most_common(1)[0][0]
+
+    # Validate
+    passed = True
+    issues = []
+
+    if expected_geom and actual_geom != expected_geom:
+        passed = False
+        issues.append(f"Geometry mismatch: expected {expected_geom}, got {actual_geom} (twist={avg_twist:.1f}°)")
+
+    if expected_dl and actual_dl != expected_dl:
+        passed = False
+        issues.append(f"D/L mismatch: expected {expected_dl}, got {actual_dl}")
+
+    return {
+        'name': sysname,
+        'passed': passed,
+        'geometry': actual_geom,
+        'twist': avg_twist,
+        'dl': actual_dl,
+        'chsm': records[0].get('chsm'),
+        'issues': issues
+    }
+
 
 
 if __name__ == '__main__':

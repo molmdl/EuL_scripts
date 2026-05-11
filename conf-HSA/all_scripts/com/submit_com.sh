@@ -9,9 +9,7 @@
 #for l in me_sssD_sap me_sssL_sap me_rrrL_sap me_rrrD_sap ; do 
 #for l in me_rrrD_sap ; do 
 #for l in `cat rerun_list.txt` ; do 
-#for l in phe_sssL_sap ; do 
-#for l in me_sssD_tsap me_sssL_tsap me_rrrD_tsap me_rrrL_tsap  ; do
-for l in me_sssD_tsap ; do
+for l in phe_sssL_sap ; do 
 	cd $l
 	#cp ../../scripts/com/*mdp .
 	bash ../../scripts/com/pr_prod.sh $l

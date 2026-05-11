@@ -6,7 +6,7 @@
 
 **Root Cause:** The `plot_rmsd_overlay` function creates two separate annotation boxes that occupy the same screen space.
 
-**File:** `~/dparker/dp_xinyi/ana_code/com_ana_trj/analyze_trajectory_standalone.py`
+**File:** `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/analyze_trajectory_standalone.py`
 
 **Function:** `plot_rmsd_overlay` (lines 257-289)
 
@@ -193,7 +193,7 @@ After applying the fix:
    ```
 
 2. Check the output plot:
-   - `~/dparker/dp_xinyi/ana_code/com_ana_trj/output/rmsd/rmsd_plot.png`
+   - `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/output/rmsd/rmsd_plot.png`
 
 3. Verify:
    - [ ] Legend box is clearly visible in upper area

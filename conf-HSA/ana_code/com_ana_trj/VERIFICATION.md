@@ -8,7 +8,7 @@ gaps: []
 
 # Verification Report: com_ana_trj.py
 
-**Script Location:** `~/dparker/dp_xinyi/ana_code/com_ana_trj/com_ana_trj.py`
+**Script Location:** `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/com_ana_trj.py`
 **Verification Date:** 2026-03-22
 **Status:** ALL REQUIREMENTS MET
 
@@ -50,7 +50,7 @@ gaps: []
 | 3 | Consistent color schemes across plotting functions | ✅ PASS | `ENERGY_COLORS` (lines 33-42) and `PALETTE` (lines 44-53) defined; used consistently across all plotting functions |
 | 4 | Fix MMPBSA empty plots | ✅ PASS | `plot_decomposition_bar()` line 772-774: checks `if df_delta.empty`; `plot_decomposition_heatmap()` line 805-816: checks for empty data |
 | 5 | Fix RMSD legend overlap | ✅ PASS | `plot_rmsd_overlay()` line 287: uses `ax.legend(loc='best', framealpha=0.9)` and line 299: `bbox_inches='tight'` |
-| 6 | Rename script to com_ana_trj.py | ✅ PASS | Script exists at `~/dparker/dp_xinyi/ana_code/com_ana_trj/com_ana_trj.py` |
+| 6 | Rename script to com_ana_trj.py | ✅ PASS | Script exists at `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/com_ana_trj.py` |
 
 ---
 

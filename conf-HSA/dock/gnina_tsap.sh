@@ -1,6 +1,7 @@
 #!/bin/bash
 
-for l in phe_sssD_tsap phe_sssL_tsap phe_rrrD_tsap phe_rrrL_tsap ; do
+#for l in phe_sssD_tsap phe_sssL_tsap phe_rrrD_tsap phe_rrrL_tsap ; do
+for l in me_sssD_tsap me_sssL_tsap me_rrrD_tsap me_rrrL_tsap ; do
 	echo lig $l
 	echo
 	cd ${l}

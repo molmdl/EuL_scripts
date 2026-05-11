@@ -7,9 +7,9 @@ score: 5/5 must-haves verified
 
 # Structural Alignment Script Verification Report
 
-**Script:** `~/dparker/dp_xinyi/ana_code/rec_align/align_structures.py`
-**Output Directory:** `~/dparker/dp_xinyi/ana_code/rec_align/test_final/`
-**Expected Directory:** `~/dparker/dp_xinyi/ana_code/rec_align/expected/`
+**Script:** `/share/home/nglokwan/dparker/dp_xinyi/ana_code/rec_align/align_structures.py`
+**Output Directory:** `/share/home/nglokwan/dparker/dp_xinyi/ana_code/rec_align/test_final/`
+**Expected Directory:** `/share/home/nglokwan/dparker/dp_xinyi/ana_code/rec_align/expected/`
 **Verified:** 2026-03-24
 
 ## Verification Summary

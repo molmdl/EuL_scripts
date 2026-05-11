@@ -56,7 +56,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import MDAnalysis as mda
 
 warnings.filterwarnings('ignore')
@@ -150,12 +149,6 @@ C_TSAP  = 'mediumorchid'
 C_UNK   = 'lightgray'
 # Cool teal-to-violet palette: T1 T2 T3 T4 Tc
 TOR_COLS = ['#00b4d8', '#0077b6', '#48cae4', '#7b2d8b', '#c77dff']  # T1 T2 T3 T4 Tc
-
-# Fixed histogram axes (identical across ligands for fair comparison)
-HIST_XMIN_DEG = -180.0
-HIST_XMAX_DEG =  180.0
-HIST_YMIN_PCT =    0.0
-HIST_YMAX_PCT =  100.0
 
 # ═══════════════════════════════════════════════════════
 #  GEOMETRY / MATH HELPERS  (fully vectorised)
@@ -938,7 +931,7 @@ def run_part_A(records, mol_atoms, outdir, sysname):
 #  PART B  – Torsion analysis
 # ═══════════════════════════════════════════════════════
 
-def run_part_B(records, outdir, sysname, write_classification_chart=True):
+def run_part_B(records, outdir, sysname):
     os.makedirs(outdir, exist_ok=True)
 
     times  = np.array([r['time']      for r in records])
@@ -993,9 +986,9 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
     hist_csv = os.path.join(outdir, 'B_torsion_histograms.csv')
     header   = ['bin_deg']
     for n in tnames:
-        header += [f'{n}_SAP_pct', f'{n}_TSAP_pct', f'{n}_all_pct']
+        header += [f'{n}_SAP', f'{n}_TSAP', f'{n}_all']
 
-    all_hists = {}   # name → (pct_sap, pct_tsap, pct_all)
+    all_hists = {}   # name → (frac_sap, frac_tsap, frac_all)
     for name, vals_row in zip(tnames, tor_mat):
         def cnt(mask):
             v = vals_row[mask]
@@ -1003,10 +996,11 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
         cs  = cnt(sap_mask)
         ct  = cnt(tsap_mask)
         ca  = cnt(np.ones(nf_total, dtype=bool))
-        # Convert to probability percent per bin (sum over bins = 100%).
-        fs  = cs  / max(n_sap_f,  1) * 100.0 if n_sap_f  > 0 else cs * 0.0
-        ft  = ct  / max(n_tsap_f, 1) * 100.0 if n_tsap_f > 0 else ct * 0.0
-        fa  = ca  / nf_total          * 100.0
+        # normalise each curve by its own frame count so fractions sum to 1
+        dbin = bin_edges[1] - bin_edges[0]
+        fs  = cs  / max(n_sap_f,  1) / dbin if n_sap_f  > 0 else cs * 0.0
+        ft  = ct  / max(n_tsap_f, 1) / dbin if n_tsap_f > 0 else ct * 0.0
+        fa  = ca  / nf_total          / dbin
         all_hists[name] = (fs, ft, fa)
 
     with open(hist_csv, 'w', newline='') as f:
@@ -1016,7 +1010,7 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
             row = [f'{bc:.2f}']
             for name in tnames:
                 fs, ft, fa = all_hists[name]
-                row += [f'{fs[j]:.4f}', f'{ft[j]:.4f}', f'{fa[j]:.4f}']
+                row += [f'{fs[j]:.6f}', f'{ft[j]:.6f}', f'{fa[j]:.6f}']
             w.writerow(row)
     print(f'  [B] {hist_csv}')
 
@@ -1024,54 +1018,19 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
     fig, ax = plt.subplots(figsize=(8, 4.5))
     for name, col in zip(tnames, TOR_COLS):
         fa = all_hists[name][2]
-        ax.plot(bin_ctrs, fa, color=col, lw=1.8, alpha=0.90)
+        ax.plot(bin_ctrs, fa, color=col, lw=1.8, alpha=0.90, label=name)
         ax.fill_between(bin_ctrs, fa, alpha=0.12, color=col)
-
-    # Annotate Tc peak value (all-frame distribution)
-    tc_name = tnames[-1]
-    tc_all = all_hists[tc_name][2]
-    tc_peak_idx = int(np.nanargmax(tc_all))
-    tc_peak_x = float(bin_ctrs[tc_peak_idx])
-    tc_peak_y = float(tc_all[tc_peak_idx])
-    ax.scatter([tc_peak_x], [tc_peak_y], color=TOR_COLS[-1], s=30, zorder=5)
-    ax.annotate(
-        f'Tc peak: {tc_peak_x:.1f}° ({tc_peak_y:.1f}%)',
-        xy=(tc_peak_x, tc_peak_y),
-        xytext=(10, 8),
-        textcoords='offset points',
-        fontsize=9,
-        color=TOR_COLS[-1],
-        ha='left',
-        va='bottom',
-        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.75),
-    )
-
     ax.axvline(0, color='k', lw=0.6, ls='--', alpha=0.5)
     ax.set_xlabel('Torsion angle (°)', fontsize=11)
-    ax.set_ylabel('Probability (%)', fontsize=11)
-    ax.set_xlim(HIST_XMIN_DEG, HIST_XMAX_DEG)
+    ax.set_ylabel('Probability density (deg⁻¹)', fontsize=11)
+    ax.set_xlim(-180, 180)
     ax.set_xticks([-180, -90, 0, 90, 180])
-    ax.set_ylim(HIST_YMIN_PCT, HIST_YMAX_PCT)
-    ax.grid(True, which='major', axis='both', color='lightgray',
-            linestyle=':', linewidth=0.8, alpha=0.9)
+    ax.legend(fontsize=9, framealpha=0.85, ncol=len(tnames))
     ax.set_title(f'{sysname}  –  Torsion angle distributions', fontsize=11)
     plt.tight_layout()
     fig.savefig(os.path.join(outdir, 'B_torsion_histograms.png'), dpi=150)
     plt.close(fig)
     print(f'  [B] {os.path.join(outdir, "B_torsion_histograms.png")}')
-
-    # Separate legend figure for cleaner histogram panel
-    leg_png = os.path.join(outdir, 'B_torsion_histograms_legend.png')
-    fig, ax = plt.subplots(figsize=(8.0, 1.5))
-    ax.axis('off')
-    handles = [Line2D([0], [0], color=col, lw=2.2) for col in TOR_COLS]
-    ax.legend(handles, tnames, loc='center', ncol=len(tnames),
-              frameon=False, fontsize=10, handlelength=2.8,
-              columnspacing=1.4)
-    plt.tight_layout()
-    fig.savefig(leg_png, dpi=150, bbox_inches='tight', pad_inches=0.25)
-    plt.close(fig)
-    print(f'  [B] {leg_png}')
 
     # ── Classification time-series CSV + PNG ──────────────────────
     cls_csv = os.path.join(outdir, 'B_classification.csv')
@@ -1082,52 +1041,49 @@ def run_part_B(records, outdir, sysname, write_classification_chart=True):
             w.writerow([r['frame'], f"{r['time']:.1f}", g])
     print(f'  [B] {cls_csv}')
 
+    # Classification panel: top = torsion scatter, bottom = geom bar
+    mean_ring = np.array([np.nanmean(r['ring_tors']) for r in records])
+    chrom_t   = np.array([r['chrom_tor']             for r in records])
+    pt_colors = [cls_color[g] for g in geoms]
+
     cls_int   = {'SAP': 1, 'TSAP': -1, 'UNK': 0}
+    cls_vals  = np.array([cls_int[g] for g in geoms])
 
     n_sap  = geoms.count('SAP')
     n_tsap = geoms.count('TSAP')
     n_unk  = geoms.count('UNK')
     nf     = len(geoms)
 
-    if write_classification_chart:
-        # Classification panel: top = torsion scatter, bottom = geom bar
-        mean_ring = np.array([np.nanmean(r['ring_tors']) for r in records])
-        chrom_t   = np.array([r['chrom_tor']             for r in records])
-        pt_colors = [cls_color[g] for g in geoms]
-        cls_vals  = np.array([cls_int[g] for g in geoms])
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True,
+                                    gridspec_kw={'height_ratios': [2, 1]})
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5.5), sharex=True,
-                                        gridspec_kw={'height_ratios': [2, 1]})
+    ax1.scatter(times / 1000, mean_ring, c=pt_colors, s=12, alpha=0.8,
+                linewidths=0, label='mean ring tors.')
+    ax1.scatter(times / 1000, chrom_t,  c=pt_colors, s=12, alpha=0.8,
+                linewidths=0, marker='^', label='chrom. tors.')
+    ax1.axhline(0, color='k', lw=0.5, ls='--')
+    ax1.set_ylabel('Torsion (°)', fontsize=10)
+    ax1.set_ylim(-185, 185)
+    ax1.set_yticks([-180, -90, 0, 90, 180])
+    ax1.legend(fontsize=8, loc='upper right')
 
-        ax1.scatter(times / 1000, mean_ring, c=pt_colors, s=12, alpha=0.8,
-                    linewidths=0, label='mean ring tors.')
-        ax1.scatter(times / 1000, chrom_t,  c=pt_colors, s=12, alpha=0.8,
-                    linewidths=0, marker='^', label='chrom. tors.')
-        ax1.axhline(0, color='k', lw=0.5, ls='--')
-        ax1.set_ylabel('Torsion (°)', fontsize=10)
-        ax1.set_ylim(-185, 185)
-        ax1.set_yticks([-180, -90, 0, 90, 180])
-        ax1.legend(fontsize=8, loc='upper right')
+    ax2.scatter(times / 1000, cls_vals, c=pt_colors, s=18, alpha=0.85,
+                linewidths=0)
+    ax2.set_yticks([-1, 0, 1])
+    ax2.set_yticklabels(['TSAP', 'UNK', 'SAP'], fontsize=9)
+    ax2.set_xlabel('Time (ns)', fontsize=10)
+    ax2.set_ylabel('Geometry', fontsize=10)
 
-        ax2.scatter(times / 1000, cls_vals, c=pt_colors, s=18, alpha=0.85,
-                    linewidths=0)
-        ax2.set_yticks([-1, 0, 1])
-        ax2.set_yticklabels(['TSAP', 'UNK', 'SAP'], fontsize=9)
-        ax2.set_xlabel('Time (ns)', fontsize=10)
-        ax2.set_ylabel('Geometry', fontsize=10)
-
-        fig.suptitle(
-            f'{sysname}  –  Torsion-based classification\n'
-            f'SAP: {n_sap} ({100*n_sap/nf:.1f}%)   '
-            f'TSAP: {n_tsap} ({100*n_tsap/nf:.1f}%)   '
-            f'UNK: {n_unk} ({100*n_unk/nf:.1f}%)',
-            fontsize=11)
-        plt.tight_layout()
-        fig.savefig(os.path.join(outdir, 'B_classification.png'), dpi=150)
-        plt.close(fig)
-        print(f'  [B] {os.path.join(outdir, "B_classification.png")}')
-    else:
-        print('  [B] Skipped B_classification.png (--skip-classification-chart)')
+    fig.suptitle(
+        f'{sysname}  –  Torsion-based classification\n'
+        f'SAP: {n_sap} ({100*n_sap/nf:.1f}%)   '
+        f'TSAP: {n_tsap} ({100*n_tsap/nf:.1f}%)   '
+        f'UNK: {n_unk} ({100*n_unk/nf:.1f}%)',
+        fontsize=11)
+    plt.tight_layout()
+    fig.savefig(os.path.join(outdir, 'B_classification.png'), dpi=150)
+    plt.close(fig)
+    print(f'  [B] {os.path.join(outdir, "B_classification.png")}')
 
     # ── Classification histogram ───────────────────────────────────
     cls_hist_csv = os.path.join(outdir, 'B_classification_histogram.csv')
@@ -1258,9 +1214,6 @@ def parse_args():
                         help='Root output directory for a --list/--dir batch '
                              '(default: "analysis"). '
                              'Output for each system goes to <batch-outdir>/<name>/.')
-    parser.add_argument('--skip-classification-chart', action='store_true',
-                        help='Do not generate B_classification.png. '
-                             'Classification CSV and histogram are still written.')
 
     args = parser.parse_args()
 
@@ -1398,7 +1351,7 @@ def parse_args():
             if not os.path.isfile(cfg['gro']):
                 parser.error(f'GRO not found: {cfg["gro"]}')
 
-    return systems, args
+    return systems
 
 
 # ═══════════════════════════════════════════════════════
@@ -1406,7 +1359,7 @@ def parse_args():
 # ═══════════════════════════════════════════════════════
 
 def main():
-    systems, args = parse_args()
+    systems = parse_args()
 
     for cfg in systems:
         sysname = cfg['name']
@@ -1453,12 +1406,7 @@ def main():
 
         # Part B output
         print('\n  ── Part B : Torsion analysis ──')
-        geoms, _, _ = run_part_B(
-            records,
-            cfg['outdir'],
-            sysname,
-            write_classification_chart=(not args.skip_classification_chart),
-        )
+        geoms, _, _ = run_part_B(records, cfg['outdir'], sysname)
 
         # Summary
         n_sap  = geoms.count('SAP')

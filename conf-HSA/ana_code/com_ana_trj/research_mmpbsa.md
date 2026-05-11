@@ -953,7 +953,7 @@ if __name__ == '__main__':
 
 ### Primary (HIGH confidence)
 - gmx_MMPBSA documentation: https://valdes-tresanco-ms.github.io/gmx_MMPBSA/dev/analyzer/
-- Analysis of provided output files in `~/dparker/dp_xinyi/ana_code/com_ana_trj/`
+- Analysis of provided output files in `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/`
 
 ### Secondary (MEDIUM confidence)
 - Matplotlib official documentation: https://matplotlib.org/stable/users/explain/customizing.html

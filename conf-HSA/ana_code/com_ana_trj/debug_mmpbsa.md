@@ -94,8 +94,8 @@ The fix has been applied and tested. All four MMPBSA plot files are now generate
 
 ## Files Involved
 
-- `~/dparker/dp_xinyi/ana_code/com_ana_trj/analyze_trajectory_standalone.py` - **FIXED**
-- `~/dparker/dp_xinyi/ana_code/com_ana_trj/FINAL_RESULTS_MMPBSA.csv` - Source data file
+- `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/analyze_trajectory_standalone.py` - **FIXED**
+- `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/FINAL_RESULTS_MMPBSA.csv` - Source data file
 
 ## MMXSA Binary Format
 

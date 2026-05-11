@@ -8,7 +8,7 @@
 
 This research covers implementing Aim 2 of a GROMACS protein-ligand analysis script: calculating distance-based per-residue contact numbers between receptor and ligand, generating time series data, and outputting CSV and PNG plots.
 
-Based on analysis of test files in `~/dparker/dp_xinyi/ana_code/com_ana_trj/`:
+Based on analysis of test files in `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/`:
 - **System:** 172,475 atoms total (protein receptor + ligand + solvent + ions)
 - **Receptor:** [Protein] group - atoms 1 to ~172,000
 - **Ligand:** [MOL] group - atoms 9122-9154 (33 atoms - small molecule)
@@ -677,7 +677,7 @@ def process_in_chunks(u, chunk_size=100):
 
 ## Test File Analysis
 
-Based on the files in `~/dparker/dp_xinyi/ana_code/com_ana_trj/`:
+Based on the files in `/share/home/nglokwan/dparker/dp_xinyi/ana_code/com_ana_trj/`:
 
 - **com.tpr:** GROMACS TPR file (binary topology) - 6.7 MB
 - **com_traj.xtc:** GROMACS XTC trajectory - 730 KB (likely 10-50 frames)

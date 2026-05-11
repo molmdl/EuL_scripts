@@ -4,11 +4,7 @@ source ~/scripts/gmxMMPBSA.env
 
 CWD=`pwd`
 
-#for i in `cat list.txt` ; do
-#for i in phe_sssD_tsap me_sssD_sap me_rrrL_sap ; do
-#for i in me_sssD_tsap me_sssL_tsap me_rrrD_tsap me_rrrL_tsap ; do
-#for i in me_sssD_sap me_sssL_sap me_rrrD_sap me_rrrL_sap ; do
-for i in me_sssD_tsap ; do
+for i in `cat list.txt` ; do
 	cd $i
 	mkdir fp
 	cd fp
