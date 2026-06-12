@@ -1,0 +1,1 @@
+for i in `cat list.txt` ; do rm ${i}/prod_last.xtc ; for j in {0..3} ; do echo 0 | gmx trjconv -f ${i}/prod_${j}.xtc -s ${i}/prod_${j}.tpr -dump 100000 -o ${i}/tmp_${j}.xtc ; done ; gmx trjcat -cat -f ${i}/tmp_?.xtc -o ${i}/tmp.xtc ; echo 0 1 | gmx trjconv -s ${i}/prod_0.tpr -f ${i}/tmp.xtc -pbc mol -center -ur compact -o ${i}/prod_last.xtc ; rm ${i}/tmp.xtc ${i}/tmp_?.xtc ; done

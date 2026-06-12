@@ -5,7 +5,7 @@
 #SBATCH -c 16
 #SBATCH -p workq
 
-for l in dzp ibp ; do
+for l in ibp ibp_r ; do
 	echo lig $l
 	echo
 	cd ${l}
