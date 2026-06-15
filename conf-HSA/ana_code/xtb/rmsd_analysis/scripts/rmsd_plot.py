@@ -44,6 +44,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.interpolate import CubicSpline
+from matplotlib.ticker import FixedLocator, FormatStrFormatter
 
 
 # ───────────────────────────────────────────────────────────────
@@ -72,11 +73,11 @@ COLOR_XTB_COMREF = "#e15759"  # Tableau red (for xtb comref in cross-method)
 # Helper: adaptive bin edges
 # ───────────────────────────────────────────────────────────────
 
-def compute_bin_edges(rmsd_values, min_bins=40, max_bins=100, target_bin_width=0.03):
+def compute_bin_edges(rmsd_values, min_bins=10, max_bins=25, target_bin_width=0.10):
     """
     Compute adaptive bin edges from RMSD data.
 
-    Targets ~0.03 Å bin width with floor of 40 and ceiling of 100 bins.
+    Targets ~0.05 Å bin width with floor of 15 and ceiling of 50 bins.
     """
     data = np.asarray(rmsd_values)
     data = data[~np.isnan(data)]  # remove NaN
@@ -98,8 +99,8 @@ def compute_bin_edges(rmsd_values, min_bins=40, max_bins=100, target_bin_width=0
 # Helper: CubicSpline smooth density curves
 # ───────────────────────────────────────────────────────────────
 
-def spline_density(data, bin_edges=None, min_bins=40, max_bins=100,
-                   target_bin_width=0.03, fine_points=500):
+def spline_density(data, bin_edges=None, min_bins=15, max_bins=50,
+                   target_bin_width=0.05, fine_points=500):
     """
     Compute smooth percentage curve via CubicSpline through histogram bin centers.
 
@@ -117,11 +118,11 @@ def spline_density(data, bin_edges=None, min_bins=40, max_bins=100,
         Shared bin edges should be passed for overlay plots so that
         both curves use the same binning and are directly comparable.
     min_bins : int
-        Minimum number of histogram bins (default 40).
+        Minimum number of histogram bins (default 15).
     max_bins : int
-        Maximum number of histogram bins (default 100).
+        Maximum number of histogram bins (default 50).
     target_bin_width : float
-        Target bin width in same units as data (default 0.03 Å).
+        Target bin width in same units as data (default 0.05 Å).
     fine_points : int
         Number of evaluation points for the smooth curve (default 500).
 
@@ -262,6 +263,8 @@ def plot_per_ligand(solv_df: pd.DataFrame, com_df: pd.DataFrame, out_dir: Path,
         x_solv, y_solv = spline_density(solv_sub, bin_edges=shared_bins)
         x_com, y_com = spline_density(com_sub, bin_edges=shared_bins)
 
+        ymax = max(y_solv.max(), y_com.max())
+
         ax.plot(x_solv, y_solv, color=COLOR_SOLV_MD, linewidth=0.5, alpha=0.7, label="Unbound")
         ax.plot(x_com, y_com, color=COLOR_COM_MD, linewidth=0.5, alpha=0.7, label="HSA-bound")
 
@@ -272,7 +275,7 @@ def plot_per_ligand(solv_df: pd.DataFrame, com_df: pd.DataFrame, out_dir: Path,
         # Add small left gap between y-axis and data start
         x_range = xlim[1] - xlim[0]
         ax.set_xlim(left=xlim[0] - 0.05 * x_range, right=xlim[1])
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(0, ymax * 1.05)
         ax.margins(y=0)
         ax.locator_params(axis='x', nbins=5)
         ax.locator_params(axis='y', nbins=5)
@@ -382,13 +385,10 @@ def plot_selected_4(solv_df: pd.DataFrame, com_df: pd.DataFrame, out_dir: Path,
         if len(com_sub) > 0:
             global_max = max(global_max, com_sub.max())
 
-    global_xlim = (0, global_max)
-    # Add small left gap between y-axis and x=0
-    x_range = global_xlim[1] - global_xlim[0]
-    global_xlim_padded = (global_xlim[0] - 0.05 * x_range, global_xlim[1])
+    global_xlim = (0, 1.1)
 
-    fig, axes = plt.subplots(1, 4, figsize=(6, 2), sharex=True,
-                              gridspec_kw={'wspace': 0.05})
+    fig, axes = plt.subplots(1, 4, figsize=(7, 2), sharex=True,
+                              gridspec_kw={'wspace': 0.15})
 
     global_ymax = 0
     for i, sys_name in enumerate(SELECTED_4):
@@ -411,16 +411,17 @@ def plot_selected_4(solv_df: pd.DataFrame, com_df: pd.DataFrame, out_dir: Path,
         # Track global y-max for shared y-axis scale
         global_ymax = max(global_ymax, y_solv.max(), y_com.max())
 
-        ax.plot(x_solv, y_solv, color=COLOR_SOLV_MD, linewidth=0.5, alpha=0.7)
-        ax.plot(x_com, y_com, color=COLOR_COM_MD, linewidth=0.5, alpha=0.7)
+        ax.plot(x_solv, y_solv, color=COLOR_SOLV_MD, linewidth=1.0, alpha=0.8)
+        ax.plot(x_com, y_com, color=COLOR_COM_MD, linewidth=1.0, alpha=0.8)
 
         ax.set_xlabel("RMSD (Å)", fontsize=9)
         ax.set_title(sys_name, fontsize=10)
         ax.tick_params(axis="both", labelsize=8)
-        ax.locator_params(axis='x', nbins=5)
+        ax.xaxis.set_major_locator(FixedLocator([0.0, 0.5, 1.0]))
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
     # Set shared x limits across all subplots
-    axes[0].set_xlim(global_xlim_padded)
+    axes[0].set_xlim(global_xlim)
 
     # Set shared y limits on ALL 4 panels (same scale)
     # Leftmost panel keeps y-label + ticks; inner panels remove them
@@ -432,7 +433,7 @@ def plot_selected_4(solv_df: pd.DataFrame, com_df: pd.DataFrame, out_dir: Path,
 
         if i == 0:
             # Leftmost panel: full y-axis labels and ticks
-            ax.locator_params(axis='y', nbins=5)
+            ax.locator_params(axis='y', nbins=8)
             ax.minorticks_on()
             ax.tick_params(axis='y', which='minor', length=3, width=0.5)
             ax.set_ylabel("Probability (%)", fontsize=10)
@@ -486,6 +487,8 @@ def plot_cross_method(xtb_df: pd.DataFrame, solv_df: pd.DataFrame,
         x_solv, y_solv = spline_density(solv_sub, bin_edges=shared_bins)
         x_com, y_com = spline_density(com_sub, bin_edges=shared_bins)
 
+        ymax = max(y_xtb.max(), y_solv.max(), y_com.max())
+
         ax.plot(x_xtb, y_xtb, color=COLOR_XTB_COMREF, linewidth=0.5, alpha=0.7,
                 label="xTB")
         ax.plot(x_solv, y_solv, color=COLOR_SOLV_MD, linewidth=0.5, alpha=0.7,
@@ -499,7 +502,7 @@ def plot_cross_method(xtb_df: pd.DataFrame, solv_df: pd.DataFrame,
         ax.tick_params(labelsize=12)
         x_range = xlim[1] - xlim[0]
         ax.set_xlim(left=xlim[0] - 0.05 * x_range, right=xlim[1])
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(0, ymax * 1.05)
         ax.margins(y=0)
         ax.locator_params(axis='x', nbins=5)
         ax.locator_params(axis='y', nbins=5)

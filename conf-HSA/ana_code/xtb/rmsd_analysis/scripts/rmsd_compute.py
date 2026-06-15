@@ -14,6 +14,10 @@ conformer type (SAP vs TSAP). SAP uses canonical indices [0..7,54] and
 [0..7,54,63]; TSAP uses the inverse atom mapping from atom_mappings.json
 to find the corresponding indices [0..6,84,106] and [0..6,84,106,107].
 
+solv_md reads PBC-fixed, rot+trans fitted, MOL-only trajectories from
+solv_pbc_dir (produced by trjconv_pbc.sh). No Python-side PBC correction
+or solvent stripping is needed.
+
 The common reference (rmsd_heavy_comref_A) uses com_md frame-0 as the
 universal reference structure. For com_md, this equals rmsd_heavy_A
 within float precision (self-reference). For xtb/solv_md, values > 0
@@ -29,16 +33,16 @@ Output: 4 CSV files in out-dir:
   - rmsd_summary.csv (summary stats per system per method)
 
 Usage:
-  python rmsd_analysis/scripts/rmsd_compute.py \\
-      --data-dir data --solv-dir solv_md --com-dir com_md \\
+  python rmsd_analysis/scripts/rmsd_compute.py \
+      --data-dir data --solv-pbc-dir rmsd_analysis/solv_pbc --com-dir com_md \
       --out-dir rmsd_analysis/csv --method all
 
-  python rmsd_analysis/scripts/rmsd_compute.py \\
-      --data-dir data --solv-dir solv_md --com-dir com_md \\
+  python rmsd_analysis/scripts/rmsd_compute.py \
+      --data-dir data --solv-pbc-dir rmsd_analysis/solv_pbc --com-dir com_md \
       --out-dir rmsd_analysis/csv --method xtb
 
-  python rmsd_analysis/scripts/rmsd_compute.py \\
-      --data-dir data --solv-dir solv_md --com-dir com_md \\
+  python rmsd_analysis/scripts/rmsd_compute.py \
+      --data-dir data --solv-pbc-dir rmsd_analysis/solv_pbc --com-dir com_md \
       --out-dir rmsd_analysis/csv --method solv_md --system phe_sssD_sap
 """
 
@@ -384,10 +388,14 @@ def compute_xtb_rmsd(data_dir: Path, out_dir: Path, sap_to_tsap: dict,
 # Task 1b: solv_md RMSD computation
 # ───────────────────────────────────────────────────────────────
 
-def compute_solv_md_rmsd(solv_dir: Path, out_dir: Path, sap_to_tsap: dict,
+def compute_solv_md_rmsd(solv_pbc_dir: Path, out_dir: Path, sap_to_tsap: dict,
                         com_dir: Path, systems=None):
     """
     Compute per-frame heavy-atom RMSD for solv_md trajectories.
+
+    Reads PBC-fixed, rot+trans fitted, MOL-only trajectories from
+    solv_pbc_dir/{sys_name}/ref.pdb + solv_pbc.xtc (produced by
+    trjconv_pbc.sh). No Python-side PBC correction or solvent stripping.
 
     Three RMSD columns per frame:
     1. rmsd_heavy_A: all-heavy alignment to own frame-0 reference (primary)
@@ -404,11 +412,11 @@ def compute_solv_md_rmsd(solv_dir: Path, out_dir: Path, sap_to_tsap: dict,
     rows = []
     for sys_name in systems:
         t0 = time.time()
-        tpr_path = solv_dir / sys_name / "prod_0.tpr"
-        xtc_path = solv_dir / sys_name / "solv_all.xtc"
+        pdb_path = solv_pbc_dir / sys_name / "ref.pdb"
+        xtc_path = solv_pbc_dir / sys_name / "solv_pbc.xtc"
 
-        if not tpr_path.exists() or not xtc_path.exists():
-            print(f"  SKIP {sys_name}: solv_md files not found", file=sys.stderr)
+        if not pdb_path.exists() or not xtc_path.exists():
+            print(f"  SKIP {sys_name}: solv_pbc files not found", file=sys.stderr)
             continue
 
         comp = parse_system_name(sys_name)
@@ -423,13 +431,11 @@ def compute_solv_md_rmsd(solv_dir: Path, out_dir: Path, sap_to_tsap: dict,
 
         print(f"  solv_md: {sys_name} ...", end="", flush=True)
 
-        u = mda.Universe(str(tpr_path), str(xtc_path))
-        mol = u.select_atoms("resname MOL")
-        n_mol = mol.n_atoms
+        u = mda.Universe(str(pdb_path), str(xtc_path))
 
         eu8_align_idx = get_eu8_align_idx(conformer, species, sap_to_tsap)
 
-        heavy_idx = get_heavy_indices(mol)
+        heavy_idx = get_heavy_indices(u.atoms)
         n_heavy = len(heavy_idx)
 
         if len(heavy_idx) != len(comref_heavy_idx):
@@ -441,26 +447,26 @@ def compute_solv_md_rmsd(solv_dir: Path, out_dir: Path, sap_to_tsap: dict,
             continue
 
         u.trajectory[0]
-        ref_mol_pos = mol.positions.copy()
-        ref_heavy = ref_mol_pos[heavy_idx]
-        ref_eu8_align = ref_mol_pos[eu8_align_idx]
+        ref_positions = u.atoms.positions.copy()
+        ref_heavy = ref_positions[heavy_idx]
+        ref_eu8_align = ref_positions[eu8_align_idx]
 
         n_frames = len(u.trajectory)
 
         for frame_idx in range(n_frames):
             u.trajectory[frame_idx]
-            mol_pos = mol.positions.copy()
+            frame_pos = u.atoms.positions.copy()
 
-            R_h, P_cent_h, Q_cent_h = kabsch(mol_pos[heavy_idx], ref_heavy)
-            aligned_heavy = (mol_pos[heavy_idx] - P_cent_h) @ R_h + Q_cent_h
+            R_h, P_cent_h, Q_cent_h = kabsch(frame_pos[heavy_idx], ref_heavy)
+            aligned_heavy = (frame_pos[heavy_idx] - P_cent_h) @ R_h + Q_cent_h
             rmsd_heavy = np.sqrt(np.mean((aligned_heavy - ref_heavy) ** 2))
 
-            R_e, P_cent_e, Q_cent_e = kabsch(mol_pos[eu8_align_idx], ref_eu8_align)
-            aligned_eu8 = (mol_pos - P_cent_e) @ R_e + Q_cent_e
+            R_e, P_cent_e, Q_cent_e = kabsch(frame_pos[eu8_align_idx], ref_eu8_align)
+            aligned_eu8 = (frame_pos - P_cent_e) @ R_e + Q_cent_e
             rmsd_eu8 = np.sqrt(np.mean((aligned_eu8[heavy_idx] - ref_heavy) ** 2))
 
-            R_c, P_cent_c, Q_cent_c = kabsch(mol_pos[heavy_idx], comref_heavy_pos)
-            aligned_comref = (mol_pos[heavy_idx] - P_cent_c) @ R_c + Q_cent_c
+            R_c, P_cent_c, Q_cent_c = kabsch(frame_pos[heavy_idx], comref_heavy_pos)
+            aligned_comref = (frame_pos[heavy_idx] - P_cent_c) @ R_c + Q_cent_c
             rmsd_comref = np.sqrt(np.mean((aligned_comref - comref_heavy_pos) ** 2))
 
             rows.append({
@@ -853,8 +859,8 @@ def main():
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"),
                         help="Path to xtb data directory (default: data)")
-    parser.add_argument("--solv-dir", type=Path, default=Path("solv_md"),
-                        help="Path to solv_md directory (default: solv_md)")
+    parser.add_argument("--solv-pbc-dir", type=Path, default=Path("rmsd_analysis/solv_pbc"),
+                        help="Path to PBC-fixed solv_md trajectories (default: rmsd_analysis/solv_pbc)")
     parser.add_argument("--com-dir", type=Path, default=Path("com_md"),
                         help="Path to com_md directory (default: com_md)")
     parser.add_argument("--out-dir", type=Path, default=Path("rmsd_analysis/csv"),
@@ -894,7 +900,7 @@ def main():
 
     if args.method in ("solv_md", "all"):
         print("\n--- solv_md (dual: all-heavy primary + Eu+8 legacy, comref common reference) ---")
-        solv_df = compute_solv_md_rmsd(args.solv_dir, args.out_dir, sap_to_tsap,
+        solv_df = compute_solv_md_rmsd(args.solv_pbc_dir, args.out_dir, sap_to_tsap,
                                         args.com_dir, systems)
 
     if args.method in ("com_md", "all"):
